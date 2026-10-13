@@ -82,8 +82,9 @@ def test_held_positions_are_valued_and_not_bought_again():
     assert plan.equity == pytest.approx(250_000 + 3_000 * 50 + 7_000 * 85)
     assert plan.positions.loc["X", "poids"] == pytest.approx(595_000 / plan.equity)
     assert plan.positions.loc["A", "stop_loss"] == pytest.approx(48 * 0.95)
-    assert plan.positions.loc["A", "take_profit"] == pytest.approx(48 * 1.05)
+    assert list(plan.positions["type"]) == ["RSI", "RSI"]
     assert list(plan.orders.index) == ["B"]
+    assert plan.take_profit_pct == 0.05
 
 
 def test_cash_limits_orders_and_tiny_leftovers_are_skipped():
@@ -117,3 +118,50 @@ def test_empty_portfolio_is_rejected():
     with pytest.raises(ValueError, match="Portefeuille vide"):
         plan_orders(signals(("A", 1.0, 10.0)), portfolio(0), pd.Series(dtype=float),
                     StrategyConfig())
+
+
+
+# --- Take profit selon la tendance et grandes valeurs -------------------------------------------
+
+@pytest.mark.parametrize("bullish, expected", [(True, 0.10), (False, 0.05)])
+def test_take_profit_depends_on_market_trend(bullish, expected):
+    plan = plan_orders(signals(("A", 2.0, 50.0)), portfolio(1_000_000), pd.Series(dtype=float),
+                       StrategyConfig(), bullish=bullish)
+    assert plan.take_profit_pct == expected
+
+
+BIG = [f"M{k}" for k in range(1, 11)]
+
+
+def test_leftover_cash_is_spread_over_largest_stocks():
+    prices = pd.Series({t: 100.0 for t in BIG})
+    plan = plan_orders(signals(), portfolio(1_000_000), prices, StrategyConfig(),
+                       core_members=BIG, core_universe=BIG)
+    assert sorted(plan.core_buys.index) == sorted(BIG)
+    assert (plan.core_buys["quantite"] == int(100_000 // (100 * (1 + PRICE_BUFFER)))).all()
+    assert plan.core_buys["montant_estime"].sum() * (1 + PRICE_BUFFER) <= 1_000_000
+    assert plan.core_sells.empty
+
+
+def test_rsi_buys_are_funded_by_selling_the_largest_lines():
+    prices = pd.Series({"M1": 100.0, "M2": 100.0, "M3": 100.0})
+    pf = portfolio(0, M1=(3_000, 90.0), M2=(2_000, 90.0), M3=(5_000, 90.0))
+    plan = plan_orders(signals(("A", 2.0, 50.0)), pf, prices, StrategyConfig(),
+                       core_members=["M1", "M2", "M3"], core_universe=["M1", "M2", "M3"])
+
+    assert list(plan.orders.index) == ["A"]
+    cost = plan.orders.loc["A", "quantite"] * 50 * (1 + PRICE_BUFFER)
+    assert list(plan.core_sells.index) == ["M3"]  # la plus grosse ligne
+    assert plan.core_sells.loc["M3", "montant_estime"] * (1 - PRICE_BUFFER) >= cost
+    assert plan.core_buys.empty
+    assert set(plan.positions["type"]) == {"grande valeur"}
+    assert plan.positions["stop_loss"].isna().all()  # pas de stop sur les grandes valeurs
+
+
+def test_stocks_leaving_the_ranking_are_sold_and_reinvested():
+    prices = pd.Series({"OLD": 100.0, "M1": 100.0, "M2": 100.0})
+    pf = portfolio(0, OLD=(1_000, 100.0), M1=(500, 100.0))
+    plan = plan_orders(signals(), pf, prices, StrategyConfig(),
+                       core_members=["M1", "M2"], core_universe=["OLD", "M1", "M2"])
+    assert plan.core_sells.loc["OLD", "quantite"] == 1_000
+    assert list(plan.core_buys.index) == ["M2"]  # la grande valeur la moins représentée

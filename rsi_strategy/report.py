@@ -15,8 +15,9 @@ GRID = "#e4e3df"
 PCT_KEYS = {"Rendement total", "Rendement relatif", "Rendement annualisé", "Volatilité annualisée",
             "Max drawdown", "Alpha annualisé", "Tracking error", "Taux de réussite", "Gain moyen par trade",
             "Gain moyen (gagnants)", "Perte moyenne (perdants)", "Exposition moyenne",
-            "Gain moyen avant frais"}
-MONEY_KEYS = {"Valeur finale ($)", "P&L total réalisé ($)", "Frais et glissement payés ($)"}
+            "Gain moyen avant frais", "Part moyenne en grandes valeurs"}
+MONEY_KEYS = {"Valeur finale ($)", "P&L total réalisé ($)", "Frais et glissement payés ($)",
+              "P&L grandes valeurs ($)"}
 
 
 def _fmt(key: str, value) -> str:

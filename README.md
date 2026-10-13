@@ -1,19 +1,21 @@
 # Stratégie RSI – small & mid caps US
 
 Stratégie de retour à la moyenne, positions longues uniquement :
-on achète les small et mid caps en tendance haussière qui viennent de subir un repli brutal
-(RSI(2) sous 10), avec un stop loss et un take profit à 5 %. La performance est comparée à un
-indice équivalent. Toutes les données viennent de Yahoo Finance (via `yfinance`).
+on achète les small et mid caps US en tendance haussière qui viennent de subir un repli brutal
+(RSI(2) sous 10), avec un stop loss à 5 % et un take profit à 5 ou 10 % selon la tendance du
+marché. Le cash inutilisé est placé dans les plus grandes valeurs US. La performance est comparée
+au WLS, l'indice du concours Bloomberg. Les cours viennent de Yahoo Finance (via `yfinance`).
 
 ## Règles
 
 | Élément | Règle |
 |---|---|
-| Univers | Actions US cotées au NYSE / Nasdaq avec une capitalisation de **300 M$ à 10 Md$** (small caps 300 M–2 Md$, mid caps 2–10 Md$), un cours > 5 $ et un volume moyen sur 3 mois > 100 000 titres. La liste vient du screener Yahoo Finance. |
+| Univers | **Small & mid caps US membres du WLS** : actions cotées aux États-Unis dont la capitalisation retenue par l'indice va de **300 M$ à 10 Md$** (small caps 300 M–2 Md$, mid caps 2–10 Md$). Seuls les membres du WLS sont autorisés dans le concours ; la liste s'importe depuis Bloomberg (voir plus bas). Sans elle, l'univers vient du screener Yahoo Finance (cours > 5 $, volume moyen sur 3 mois > 100 000 titres). |
 | Signal d'achat | **RSI(2) < 10** à la clôture, et cours **au-dessus de sa moyenne mobile 200 séances** (RSI de Wilder, calculé sur les cours de clôture ajustés). La règle d'origine, RSI(14) < 30 sur 2 séances consécutives sans filtre de tendance, reste disponible : `--rsi-period 14 --rsi-threshold 30 --days 2 --trend-filter 0`. |
 | Fréquence | **Un scan par jour**, après la clôture. L'achat se fait à l'ouverture de la séance suivante, ce qui évite tout biais d'anticipation. |
 | Stop loss | **-5 %** par rapport au prix d'achat. |
-| Take profit | **+5 %** par rapport au prix d'achat. |
+| Take profit | **+10 %** si, le soir du signal, VT (proche du WLS) cote au-dessus de sa moyenne mobile 200 séances : on laisse courir les rebonds quand le marché monte. **+5 %** sinon. L'objectif est fixé à l'achat. |
+| Cash restant | Placé dans les **10 plus grandes capitalisations US du WLS** (une catégorie d'actions par société), à parts à peu près égales, sans stop ni take profit, pour suivre le marché au lieu de dormir. Elles sont vendues en priorité, en partant des plus grosses lignes, pour financer les achats RSI. |
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
 | Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
@@ -47,6 +49,14 @@ python -m rsi_strategy scan
 
 ## Routine quotidienne pendant le concours
 
+0. **Une seule fois** : importez la liste des membres du WLS, exportée du terminal Bloomberg
+   (`WLS Index MEMB <GO>`, export Excel avec les colonnes Ticker, Name, Weight, Shares, Price) :
+
+   ```bash
+   python -m rsi_strategy import-wls "chemin/vers/WLS_as_of_Oct_13_2026.xlsx"
+   ```
+
+   Les membres US sont enregistrés dans `data/wls_members.csv` (non envoyé sur GitHub).
 1. **Chaque soir, après la clôture US** (22h, heure de Paris), mettez à jour `portefeuille.csv`
    avec vos positions et votre cash, tels qu'affichés par la plateforme du concours. Partez du
    modèle `portefeuille.exemple.csv` :
@@ -60,15 +70,19 @@ python -m rsi_strategy scan
 
    La ligne `CASH` donne le cash disponible. Le fichier peut aussi être enregistré depuis Excel
    (séparateur `;` et virgule décimale acceptés). Il n'est pas envoyé sur GitHub.
-2. **Lancez le scan** : `python -m rsi_strategy scan`. Il affiche la valeur du portefeuille, le
-   poids de chaque position, et la liste des **ordres d'achat** : quelles actions, dans quel ordre
-   et en quelle quantité. Le calcul suit les mêmes règles que le backtest : 20 % maximum de la
-   valeur totale par position, RSI le plus bas d'abord, tant qu'il reste du cash. Les quantités
-   prévoient une marge de 2 %, au cas où l'action ouvrirait plus haut que la dernière clôture.
-   La liste est aussi enregistrée dans `results/ordres_<date>.csv`.
-3. **À l'ouverture suivante**, passez les achats au marché, dans l'ordre de la liste.
-4. **Dès qu'un achat est exécuté**, placez sur la plateforme un stop loss à -5 % et un take profit
-   à +5 % du prix d'exécution. Les ventes se font ensuite toutes seules.
+2. **Lancez le scan** : `python -m rsi_strategy scan`. Il affiche la tendance du marché (et donc
+   le take profit du jour), la valeur du portefeuille, le poids de chaque position, puis les
+   **ordres de l'ouverture, dans l'ordre où les passer** :
+   1. les ventes de grandes valeurs, pour financer les achats RSI ;
+   2. les achats RSI, du RSI le plus bas au plus haut, 20 % maximum de la valeur totale chacun ;
+   3. les achats de grandes valeurs avec le cash restant.
+
+   Les quantités prévoient une marge de 2 %, au cas où les cours d'ouverture s'écarteraient de la
+   dernière clôture. Les ordres sont aussi enregistrés dans `results/ordres_<date>.csv`.
+3. **À l'ouverture suivante**, passez ces ordres au marché, dans l'ordre affiché.
+4. **Dès qu'un achat RSI est exécuté**, placez sur la plateforme un stop loss à -5 % et le take
+   profit indiqué par le scan (+5 % ou +10 %) du prix d'exécution. Les ventes RSI se font ensuite
+   toutes seules. Les grandes valeurs n'ont ni stop ni take profit.
 
 Sans fichier `portefeuille.csv`, le scan affiche les signaux du jour avec des quantités
 indicatives calculées sur `--capital`.
@@ -85,11 +99,14 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--trend-filter N` | 200 | n'acheter que si l'action est au-dessus de sa moyenne mobile N séances (0 = désactivé) |
 | `--market-filter N` | 0 (désactivé) | n'acheter que si l'indice principal est au-dessus de sa moyenne mobile N séances (ex. 200) |
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
+| `--take-profit-bull` | 0.10 | take profit quand VT est au-dessus de sa moyenne 200 séances (0 = toujours `--take-profit`) |
+| `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
+| `--wls-file` | `data/wls_members.csv` | membres US du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
 | `--commission-bps` / `--slippage-bps` | 0 / 0 | coûts de transaction, en points de base (1 pb = 0,01 %) |
 | `--benchmarks` | VT SMMD IWM | ETF de comparaison (le premier est l'indice principal) |
 | `--max-tickers N` | tous | limite l'univers aux N plus grosses capitalisations, pour un essai rapide |
-| `--refresh-universe` | | ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |
+| `--refresh-universe` | | sans liste WLS : ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |
 | `--refresh-data` | | ignore le cache des cours (`data/cache/`) |
 
 Les cours téléchargés sont mis en cache dans `data/cache/` (environ 90 Mo par période pour
@@ -147,9 +164,26 @@ défaut. Les réglages ont été comparés sur 2023-2026, puis vérifiés sur 20
 
 Les résultats du RSI(2) restent proches avec des seuils de 5 ou 15 : l'avantage ne dépend pas d'un
 réglage précis. Le filtre de marché réduit le drawdown mais coûte beaucoup de rendement ; il est
-désactivé par défaut. Le take profit à 10 % fait mieux sur 2023-2026 mais beaucoup moins bien sur
-2019-2023 : on garde 5 %. Des positions plus petites obligent à prendre des signaux moins survendus,
-qui rapportent moins : on garde 20 %, et il faut respecter l'ordre du scan. Ces chiffres sont flattés par le biais du survivant (voir ci-dessous).
+désactivé par défaut. Un take profit fixe à 10 % fait mieux sur 2023-2026, marché porteur, mais
+beaucoup moins bien sur 2019-2023 : d'où le take profit qui dépend de la tendance. Des positions plus
+petites obligent à prendre des signaux moins survendus, qui rapportent moins : on garde 20 %, et il
+faut respecter l'ordre du scan. Ces chiffres sont flattés par le biais du survivant (voir
+ci-dessous).
+
+Ces backtests ont été faits avant le take profit selon la tendance, le placement du cash dans les
+grandes valeurs et l'univers WLS. Pour mesurer leur effet, comparez sur les deux périodes :
+
+```bash
+python -m rsi_strategy backtest --out results/wls
+python -m rsi_strategy backtest --take-profit-bull 0 --core-size 0 --out results/wls_sans_ajouts
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_wls
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --take-profit-bull 0 --core-size 0 --out results/oos_wls_sans_ajouts
+```
+
+Dans le backtest, les grandes valeurs sont choisies chaque mois parmi les 100 plus gros membres
+actuels du WLS, d'après leur capitalisation **à l'époque** (titres de l'indice aujourd'hui × cours
+de la veille). Les choisir d'après leur taille actuelle reviendrait à acheter en 2019 les gagnantes
+connues en 2026.
 
 ## Limites
 
@@ -161,9 +195,9 @@ qui rapportent moins : on garde 20 %, et il faut respecter l'ordre du scan. Ces 
 - **VT et le WLS** : le WLS ne compte pas les dividendes, alors que VT est comparé dividendes
   réinvestis. VT surestime donc le WLS d'environ son rendement en dividendes (de l'ordre de 2 %
   par an), ce qui rend la comparaison un peu défavorable à la stratégie.
-- **Actions autorisées** : le concours n'accepte que les actions membres du WLS. Les plus petites
-  capitalisations de l'univers (autour de 300 M$) peuvent ne pas en faire partie : vérifiez sur le
-  terminal Bloomberg avant d'acheter.
+- **Actions autorisées** : le concours n'accepte que les actions membres du WLS. Importez la liste
+  (`import-wls`) pour que l'univers s'y limite ; sans elle, vérifiez chaque action sur le terminal.
+  La composition change au fil du temps : réimportez une liste récente si besoin.
 - **SMMD** n'existe que depuis juillet 2017. Pour un backtest antérieur, utiliser par exemple
   `--benchmarks VT IWM`.
 

@@ -34,9 +34,23 @@ class StrategyConfig:
     # --- Sorties (en % du prix d'entrée) ---
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.05
+    # Take profit adapté à la tendance : si, au moment du signal, l'indice principal (VT, proche
+    # du WLS) est au-dessus de sa moyenne mobile `bull_ma_days` séances, l'objectif passe à
+    # `take_profit_bull_pct` pour laisser courir les rebonds (0 = toujours `take_profit_pct`).
+    take_profit_bull_pct: float = 0.10
+    bull_ma_days: int = 200
     # Si le stop et l'objectif sont touchés dans la même séance, on ne connaît pas l'ordre
     # avec des données journalières : par prudence on suppose que le stop est touché en premier.
     stop_first_if_ambiguous: bool = True
+
+    # --- Grandes valeurs pour le cash non utilisé (0 = désactivé) ---
+    # Le cash que les achats RSI n'utilisent pas est placé dans les `core_size` plus grandes
+    # capitalisations US du WLS, à parts à peu près égales, sans stop ni objectif. Elles sont
+    # vendues en priorité pour financer les achats RSI. Nécessite la liste des membres du WLS.
+    core_size: int = 10
+    # Backtest : candidates (plus gros poids actuels du WLS) parmi lesquelles on retient chaque mois
+    # les `core_size` plus grandes capitalisations de l'époque.
+    core_pool_size: int = 100
 
     # --- Coûts de transaction (aucun dans le concours Bloomberg) ---
     commission_bps: float = 0.0  # commission par ordre, en points de base du montant

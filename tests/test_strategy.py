@@ -35,7 +35,7 @@ def cfg(**kw) -> StrategyConfig:
     # sans filtre de tendance), qui se déclenche sur une simple baisse continue.
     base = dict(commission_bps=0.0, slippage_bps=0.0, min_avg_dollar_volume=0.0,
                 avg_volume_window=1, rsi_period=14, rsi_threshold=30.0, consecutive_days=2,
-                trend_ma_days=0)
+                trend_ma_days=0, take_profit_bull_pct=0.0, core_size=0)
     base.update(kw)
     return StrategyConfig(**base)
 
@@ -282,3 +282,94 @@ def test_relative_return_is_the_gap_in_total_return():
     strategy = pd.Series([100.0, 110.0, 130.0], index=idx)
     world = pd.Series([100.0, 105.0, 110.0], index=idx)
     assert relative_stats(strategy, world)["Rendement relatif"] == pytest.approx(0.20)
+
+
+# --- Take profit adapté à la tendance ------------------------------------------------------------
+
+@pytest.mark.parametrize("market_trend, expected_tp", [(0.01, 0.10), (-0.01, 0.05)])
+def test_take_profit_follows_market_trend(market_trend, expected_tp):
+    panel = make_panel({"A": declining()})
+    x = panel["Close"]["A"].iloc[ENTRY_DAY]
+    set_bar(panel, ENTRY_DAY, "A", x, x * 1.12, x * 0.99, x * 1.11)
+    market = pd.Series([100 * (1 + market_trend) ** k for k in range(20)], index=panel["Close"].index)
+    res = run_backtest(panel, cfg(take_profit_bull_pct=0.10, bull_ma_days=5), market_close=market)
+    t = res.trades.iloc[0]
+    assert t.take_profit_pct == expected_tp
+    assert t.exit_reason == "take_profit"
+    assert t.exit_price == pytest.approx(x * (1 + expected_tp))
+
+
+def test_adaptive_take_profit_requires_index_prices():
+    with pytest.raises(ValueError, match="tendance"):
+        run_backtest(make_panel({"A": declining()}), cfg(take_profit_bull_pct=0.10))
+
+
+# --- Grandes valeurs ---------------------------------------------------------------------------
+
+def core_panel(n_days=40, **extra):
+    closes = {"A": [50.0] * n_days, "BIG1": [100.0] * n_days, "BIG2": [100.0] * n_days,
+              "BIG3": [100.0] * n_days}
+    closes.update(extra)
+    return make_panel(closes)
+
+
+def test_idle_cash_goes_to_largest_stocks_within_the_size_limit():
+    panel = core_panel()
+    shares = pd.Series({"BIG1": 30.0, "BIG2": 20.0, "BIG3": 10.0})
+    res = run_backtest(panel, cfg(core_size=2), core_shares=shares)
+    assert set(res.core_holdings) == {"BIG1", "BIG2"}  # les 2 plus grosses capitalisations
+    # 2 lignes plafonnées à 20 % chacune : 40 % investi, le reste en cash.
+    assert res.equity["core"].iloc[-1] == pytest.approx(400_000, rel=1e-3)
+    assert res.trades.empty and res.open_positions.empty  # pas de signal RSI sur les grandes valeurs
+
+
+def test_largest_stocks_are_ranked_with_prices_of_the_time():
+    n = 60  # janvier à mars : un classement au début de chaque mois
+    rising = [100.0 * 1.05 ** k for k in range(n)]  # 1 Md$ en janvier, plus de 7 Md$ en mars
+    panel = core_panel(n, RISE=rising)
+    shares = pd.Series({"BIG1": 30.0, "BIG2": 20.0, "BIG3": 10.0, "RISE": 10.0})
+    first_month = panel["Close"].index[panel["Close"].index.month == panel["Close"].index[0].month]
+    res = run_backtest(panel, cfg(core_size=1), end=first_month[-1], core_shares=shares)
+    assert set(res.core_holdings) == {"BIG1"}  # 3 Md$, contre 1 Md$ pour RISE en janvier
+    res = run_backtest(panel, cfg(core_size=1), core_shares=shares)
+    assert set(res.core_holdings) == {"RISE"}  # RISE est devenue la plus grosse en mars
+
+
+def test_largest_stocks_are_sold_to_fund_rsi_buys():
+    panel = make_panel({"A": declining(), "B1": [100.0] * 20, "B2": [100.0] * 20,
+                        "B3": [100.0] * 20, "B4": [100.0] * 20, "B5": [100.0] * 20})
+    shares = pd.Series({f"B{k}": float(10 - k) for k in range(1, 6)})
+    res = run_backtest(panel, cfg(core_size=5), core_shares=shares)
+    eq = res.equity
+    assert eq["core"].iloc[ENTRY_DAY - 1] == pytest.approx(1_000_000, rel=1e-3)  # tout investi
+    entry = pd.concat([res.trades, res.open_positions]).iloc[0]
+    assert entry["entry_date"] == panel["Close"].index[ENTRY_DAY]
+    assert entry["shares"] * entry["entry_price"] == pytest.approx(200_000, rel=0.01)
+    assert (eq["cash"] >= -1e-6).all()
+
+
+def test_accounting_with_largest_stocks_on_random_walks():
+    rng = np.random.default_rng(3)
+    n_days, n_small, n_big = 300, 30, 6
+    close = 30 * np.exp(np.cumsum(rng.normal(-0.0003, 0.03, (n_days, n_small + n_big)), axis=0))
+    names = [f"S{k}" for k in range(n_small)] + [f"BIG{k}" for k in range(n_big)]
+    panel = make_panel(dict(zip(names, close.T)))
+    noise = np.abs(rng.normal(0, 0.02, close.shape))
+    panel["Open"] = panel["Close"].shift(1).fillna(panel["Close"]) * (1 + rng.normal(0, 0.01, close.shape))
+    panel["High"] = np.maximum(panel["Open"], panel["Close"]) * (1 + noise)
+    panel["Low"] = np.minimum(panel["Open"], panel["Close"]) * (1 - noise)
+    shares = pd.Series({f"BIG{k}": float(100 + k) for k in range(n_big)})
+    market = pd.Series(np.linspace(100, 130, n_days), index=panel["Close"].index)
+
+    c = cfg(core_size=4, commission_bps=5, slippage_bps=5, take_profit_bull_pct=0.10, bull_ma_days=20)
+    res = run_backtest(panel, c, start=panel["Close"].index[40], market_close=market,
+                       core_shares=shares)
+    eq = res.equity
+    assert len(res.trades) > 10
+    assert eq["core"].mean() > 0
+    assert (eq["cash"] >= -1e-6).all()
+    assert len(res.core_holdings) <= c.core_size
+    assert not set(res.trades["ticker"]) & set(shares.index)
+    unrealized = res.open_positions["unrealized_pnl"].sum() if not res.open_positions.empty else 0.0
+    assert eq["equity"].iloc[-1] - c.initial_capital == pytest.approx(
+        res.trades["pnl"].sum() + unrealized + res.core_pnl)
