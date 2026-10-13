@@ -18,7 +18,9 @@ from .report import format_table, plot_performance, print_section, save_csv
 from .universe import load_universe
 
 ROOT = Path(__file__).resolve().parent.parent
-WARMUP_DAYS = 200  # jours calendaires téléchargés avant le début pour initialiser le RSI
+# Jours calendaires téléchargés avant le début pour initialiser les indicateurs
+# (RSI et moyennes mobiles jusqu'à environ 250 séances).
+WARMUP_DAYS = 400
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,8 +43,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rsi-threshold", type=float, default=defaults.rsi_threshold)
     s.add_argument("--days", type=int, default=defaults.consecutive_days,
                    help="nombre de séances consécutives sous le seuil")
+    s.add_argument("--trend-filter", type=int, default=defaults.trend_ma_days, metavar="N",
+                   help="n'acheter que si l'action est au-dessus de sa moyenne mobile N séances "
+                        "(ex. 200 ; 0 = désactivé)")
+    s.add_argument("--market-filter", type=int, default=defaults.market_ma_days, metavar="N",
+                   help="n'acheter que si l'indice principal est au-dessus de sa moyenne mobile "
+                        "N séances (ex. 200 ; 0 = désactivé)")
     s.add_argument("--stop-loss", type=float, default=defaults.stop_loss_pct)
     s.add_argument("--take-profit", type=float, default=defaults.take_profit_pct)
+    s.add_argument("--take-profit-first", action="store_true",
+                   help="si stop et objectif sont touchés la même séance, retenir l'objectif "
+                        "(hypothèse optimiste ; par défaut on retient le stop)")
     s.add_argument("--commission-bps", type=float, default=defaults.commission_bps)
     s.add_argument("--slippage-bps", type=float, default=defaults.slippage_bps)
     s.add_argument("--benchmarks", nargs="+", default=defaults.benchmarks,
@@ -63,7 +74,9 @@ def config_from_args(args) -> StrategyConfig:
         initial_capital=args.capital, position_size_pct=args.position_size,
         max_positions=args.max_positions, rsi_period=args.rsi_period,
         rsi_threshold=args.rsi_threshold, consecutive_days=args.days,
+        trend_ma_days=args.trend_filter, market_ma_days=args.market_filter,
         stop_loss_pct=args.stop_loss, take_profit_pct=args.take_profit,
+        stop_first_if_ambiguous=not args.take_profit_first,
         commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
         benchmarks=args.benchmarks,
     )
@@ -89,7 +102,11 @@ def cmd_backtest(args) -> None:
     bench_close = load_ohlcv(cfg.benchmarks, data_start, data_end, cache,
                              refresh=args.refresh_data)["Close"]
 
-    result = run_backtest(panel, cfg, start=args.start, end=args.end)
+    market = cfg.benchmarks[0]
+    if cfg.market_ma_days and market not in bench_close:
+        raise SystemExit(f"Filtre de marché : pas de cours pour l'indice {market}.")
+    result = run_backtest(panel, cfg, start=args.start, end=args.end,
+                          market_close=bench_close.get(market))
     equity = result.equity["equity"]
     dates = equity.index
 
@@ -134,9 +151,17 @@ def cmd_scan(args) -> None:
     start = (date.today() - timedelta(days=WARMUP_DAYS)).isoformat()
     end = (date.today() + timedelta(days=1)).isoformat()
     panel = download_ohlcv(tickers, start, end)
+    market_close = None
+    if cfg.market_ma_days:
+        market_close = download_ohlcv([cfg.benchmarks[0]], start, end)["Close"].iloc[:, 0]
 
-    rsi_values, eligible = compute_signals(panel, cfg)
+    rsi_values, eligible = compute_signals(panel, cfg, market_close)
     last = panel["Close"].index[-1]
+    if market_close is not None:
+        bullish = market_close.iloc[-1] > market_close.rolling(cfg.market_ma_days).mean().iloc[-1]
+        print(f"Filtre de marché : {cfg.benchmarks[0]} "
+              f"{'au-dessus' if bullish else 'en dessous'} de sa moyenne {cfg.market_ma_days} séances"
+              f"{'' if bullish else ' -> aucun achat'}")
     hits = eligible.columns[eligible.loc[last].to_numpy(dtype=bool)]
     close = panel["Close"].loc[last, hits]
     budget = cfg.initial_capital * cfg.position_size_pct

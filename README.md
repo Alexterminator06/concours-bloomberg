@@ -53,7 +53,10 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--position-size` | 0.20 | taille d'une position (fraction de la valeur totale du portefeuille) |
 | `--max-positions` | aucune | nombre maximum de positions simultanées (par défaut, seul le cash limite) |
 | `--rsi-threshold` / `--days` | 30 / 2 | seuil du RSI et nombre de séances consécutives |
+| `--trend-filter N` | 0 (désactivé) | n'acheter que si l'action est au-dessus de sa moyenne mobile N séances (ex. 200) |
+| `--market-filter N` | 0 (désactivé) | n'acheter que si l'indice principal est au-dessus de sa moyenne mobile N séances (ex. 200) |
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
+| `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
 | `--commission-bps` / `--slippage-bps` | 5 / 5 | coûts de transaction |
 | `--benchmarks` | SMMD IWM IJH | ETF de comparaison (le premier est l'indice principal) |
 | `--max-tickers N` | tous | limite l'univers aux N plus grosses capitalisations, pour un essai rapide |
@@ -73,6 +76,25 @@ Le backtest affiche dans la console et écrit dans `results/` :
 - `equity_curve.csv` : valeur quotidienne de la stratégie et des indices ;
 - `open_positions.csv` : positions encore ouvertes en fin de période, avec leurs niveaux de stop et d'objectif ;
 - `next_orders.csv` : ordres à passer à l'ouverture suivante.
+
+## Diagnostiquer la performance
+
+Les statistiques des trades séparent ce qui vient du signal et ce qui vient de l'exécution :
+
+- **Gain moyen avant frais** : rendement moyen d'un trade sans commission ni glissement, ce que le signal rapporte vraiment ;
+- **Frais et glissement payés ($)** : coût total des frais, à comparer au P&L réalisé ;
+- **Séances ambiguës** : nombre de trades dont le stop et l'objectif ont été touchés la même séance. Par défaut, ils comptent comme des pertes. Relancer avec `--take-profit-first` donne l'autre extrême ; la réalité se situe entre les deux.
+
+Pour comparer des variantes de la stratégie, enregistrez chaque run dans son propre dossier :
+
+```bash
+python -m rsi_strategy backtest --out results/base
+python -m rsi_strategy backtest --trend-filter 200 --out results/tendance
+python -m rsi_strategy backtest --trend-filter 200 --market-filter 200 --out results/tendance_marche
+python -m rsi_strategy backtest --rsi-period 2 --rsi-threshold 10 --days 1 --trend-filter 200 --out results/rsi2
+```
+
+Pour ne pas sur-optimiser, choisissez les réglages sur une période (par exemple `--start 2019-01-01 --end 2022-12-31`), puis vérifiez-les sur une autre (`--start 2023-01-01`).
 
 ## Limites
 

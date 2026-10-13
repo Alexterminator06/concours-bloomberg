@@ -130,6 +130,7 @@ def test_stop_and_target_same_day(stop_first, reason):
     set_bar(panel, ENTRY_DAY, "A", x, x * 1.06, x * 0.94, x)
     t = run_backtest(panel, cfg(stop_first_if_ambiguous=stop_first)).trades.iloc[0]
     assert t.exit_reason == reason
+    assert t.ambiguous
 
 
 def test_costs_are_applied():
@@ -143,6 +144,8 @@ def test_costs_are_applied():
     gross = t.shares * entry * 0.05
     fees = t.shares * entry * 0.001 + t.shares * entry * 1.05 * 0.001
     assert t.pnl == pytest.approx(gross - fees)
+    assert t.costs == pytest.approx(fees + t.shares * x * 0.002)
+    assert not t.ambiguous
 
 
 def test_max_positions_keeps_lowest_rsi():
@@ -162,6 +165,33 @@ def test_max_positions_keeps_lowest_rsi():
     first = pd.concat([res.trades, res.open_positions])
     first = first[first["signal_date"] == day]
     assert set(first["ticker"]) == expected
+
+
+def test_trend_filter_keeps_pullbacks_in_uptrends_only():
+    falling = declining(260)                                                # chute continue
+    pullback = [100 * 1.005 ** k for k in range(250)]                       # hausse...
+    pullback += [pullback[-1] * 0.92 ** k for k in range(1, 11)]            # ...puis repli brutal
+    panel = make_panel({"FALL": falling, "PULL": pullback})
+
+    _, without = compute_signals(panel, cfg())
+    _, with_trend = compute_signals(panel, cfg(trend_ma_days=200))
+    assert without["FALL"].any() and without["PULL"].any()
+    assert not with_trend["FALL"].any()
+    assert with_trend["PULL"].any()
+    assert (with_trend <= without).all().all()  # le filtre ne fait que retirer des signaux
+
+
+@pytest.mark.parametrize("market_trend, expect_trades", [(-0.01, False), (0.01, True)])
+def test_market_filter(market_trend, expect_trades):
+    panel = make_panel({"A": declining()})
+    market = pd.Series([100 * (1 + market_trend) ** k for k in range(20)], index=panel["Close"].index)
+    res = run_backtest(panel, cfg(market_ma_days=5), market_close=market)
+    assert (len(res.trades) + len(res.open_positions) > 0) == expect_trades
+
+
+def test_market_filter_requires_index_prices():
+    with pytest.raises(ValueError):
+        run_backtest(make_panel({"A": declining()}), cfg(market_ma_days=5))
 
 
 def test_liquidity_filter_blocks_illiquid_stocks():

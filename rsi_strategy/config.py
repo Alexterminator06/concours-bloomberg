@@ -23,6 +23,12 @@ class StrategyConfig:
     # Le RSI doit être sous le seuil pendant ce nombre de séances consécutives.
     consecutive_days: int = 2
 
+    # --- Filtres de tendance (0 = désactivé) ---
+    # N'acheter que si l'action cote au-dessus de sa moyenne mobile sur N séances (ex. 200).
+    trend_ma_days: int = 0
+    # N'acheter que si l'indice principal (1er de `benchmarks`) cote au-dessus de sa moyenne N séances.
+    market_ma_days: int = 0
+
     # --- Sorties (en % du prix d'entrée) ---
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.05

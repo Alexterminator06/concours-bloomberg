@@ -36,3 +36,19 @@ def test_backtest_command_writes_results(tmp_path, monkeypatch, capsys):
     curves = pd.read_csv(tmp_path / "equity_curve.csv", index_col=0)
     assert list(curves.columns) == ["Stratégie RSI", "SMMD", "IWM", "IJH"]
     assert (curves.iloc[0] == 1_000_000).all()
+
+
+def test_backtest_command_with_filters(tmp_path, monkeypatch, capsys):
+    universe = pd.DataFrame({"symbol": [f"S{k}" for k in range(30)]})
+    monkeypatch.setattr(cli, "load_universe", lambda *a, **k: universe)
+    monkeypatch.setattr(cli, "load_ohlcv",
+                        lambda tickers, start, end, cache, refresh=False: fake_panel(tickers, start, end))
+
+    cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
+              "--trend-filter", "200", "--market-filter", "200", "--take-profit-first"])
+
+    out = capsys.readouterr().out
+    assert "Frais et glissement payés ($)" in out
+    assert "Séances ambiguës" in out
+    trades = pd.read_csv(tmp_path / "trades.csv")
+    assert {"costs", "ambiguous"} <= set(trades.columns)

@@ -18,7 +18,8 @@ from .indicators import oversold_signal, rsi
 
 
 TRADE_COLUMNS = ["ticker", "signal_date", "signal_rsi", "entry_date", "entry_price", "shares",
-                 "exit_date", "exit_price", "exit_reason", "pnl", "return_pct", "holding_days"]
+                 "exit_date", "exit_price", "exit_reason", "pnl", "return_pct", "holding_days",
+                 "costs", "ambiguous"]
 OPEN_COLUMNS = ["ticker", "signal_date", "entry_date", "entry_price", "shares", "stop_loss",
                 "take_profit", "last_price", "unrealized_pnl"]
 ORDER_COLUMNS = ["ticker", "signal_date", "rsi", "close", "budget", "min_budget"]
@@ -36,6 +37,7 @@ class Position:
     signal_date: pd.Timestamp
     signal_rsi: float
     entry_fee: float
+    entry_slippage: float  # coût du glissement à l'achat, en $
 
 
 @dataclass
@@ -46,44 +48,59 @@ class BacktestResult:
     next_orders: pd.DataFrame     # signaux du dernier jour, à exécuter à l'ouverture suivante
 
 
-def compute_signals(panel: dict[str, pd.DataFrame], cfg: StrategyConfig):
-    """Renvoie (RSI, signaux d'achat éligibles) sous forme de DataFrames dates x tickers."""
+def compute_signals(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
+                    market_close: pd.Series | None = None):
+    """Renvoie (RSI, signaux d'achat éligibles) sous forme de DataFrames dates x tickers.
+
+    `market_close` (cours de l'indice principal) n'est requis que si `cfg.market_ma_days` > 0.
+    """
     close, volume = panel["Close"], panel["Volume"]
     rsi_values = rsi(close, cfg.rsi_period)
     signal = oversold_signal(rsi_values, cfg.rsi_threshold, cfg.consecutive_days)
     avg_dollar_volume = (close * volume).rolling(cfg.avg_volume_window,
                                                  min_periods=cfg.avg_volume_window).mean()
     eligible = signal & (close >= cfg.min_price) & (avg_dollar_volume >= cfg.min_avg_dollar_volume)
+    if cfg.trend_ma_days:
+        eligible &= close > close.rolling(cfg.trend_ma_days, min_periods=cfg.trend_ma_days).mean()
+    if cfg.market_ma_days:
+        if market_close is None:
+            raise ValueError("Le filtre de marché demande les cours de l'indice (market_close).")
+        mkt = market_close.reindex(close.index).ffill()
+        bullish = mkt > mkt.rolling(cfg.market_ma_days, min_periods=cfg.market_ma_days).mean()
+        eligible = eligible.mul(bullish.astype(int), axis=0).astype(bool)
     return rsi_values, eligible
 
 
 def _exit_price(pos: Position, o: float, h: float, l: float, entered_today: bool,
-                cfg: StrategyConfig, slip: float) -> tuple[float | None, str | None]:
-    """Prix et motif de sortie pour la séance, ou (None, None) si la position reste ouverte."""
+                cfg: StrategyConfig, slip: float) -> tuple[float | None, str | None, bool]:
+    """(prix, motif, ambigu) de sortie pour la séance, ou (None, None, False) si la position reste
+    ouverte. `ambigu` signale une séance où le stop et l'objectif ont tous deux été touchés."""
     if not entered_today and np.isfinite(o):
         # Gap à l'ouverture au-delà d'un des niveaux : exécution au cours d'ouverture.
         if o <= pos.stop:
-            return o * (1 - slip), "stop_loss"
+            return o * (1 - slip), "stop_loss", False
         if o >= pos.target:
-            return o, "take_profit"
+            return o, "take_profit", False
     hit_stop = l <= pos.stop
     hit_target = h >= pos.target
+    ambiguous = hit_stop and hit_target
     if hit_stop and (not hit_target or cfg.stop_first_if_ambiguous):
-        return pos.stop * (1 - slip), "stop_loss"
+        return pos.stop * (1 - slip), "stop_loss", ambiguous
     if hit_target:
-        return pos.target, "take_profit"  # ordre limite : pas de glissement
-    return None, None
+        return pos.target, "take_profit", ambiguous  # ordre limite : pas de glissement
+    return None, None, False
 
 
 def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                  start: str | pd.Timestamp | None = None,
-                 end: str | pd.Timestamp | None = None) -> BacktestResult:
+                 end: str | pd.Timestamp | None = None,
+                 market_close: pd.Series | None = None) -> BacktestResult:
     """Simule la stratégie sur `panel` ({Open, High, Low, Close, Volume} -> DataFrame dates x tickers).
 
-    Les données avant `start` servent uniquement au calcul du RSI (période de chauffe).
+    Les données avant `start` servent uniquement au calcul des indicateurs (période de chauffe).
     """
     close = panel["Close"]
-    rsi_values, eligible = compute_signals(panel, cfg)
+    rsi_values, eligible = compute_signals(panel, cfg, market_close)
 
     dates = close.index
     mask = np.ones(len(dates), dtype=bool)
@@ -134,6 +151,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                 stop=fill * (1 - cfg.stop_loss_pct),
                 target=fill * (1 + cfg.take_profit_pct),
                 signal_date=order["signal_date"], signal_rsi=order["rsi"], entry_fee=fee,
+                entry_slippage=shares * (fill - px_open),
             )
         pending = []
 
@@ -143,11 +161,12 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
             h, l = H[i, j], L[i, j]
             if not (np.isfinite(h) and np.isfinite(l)):
                 continue  # pas de cotation aujourd'hui
-            price, reason = _exit_price(pos, O[i, j], h, l, pos.entry_idx == i, cfg, slip)
+            price, reason, ambiguous = _exit_price(pos, O[i, j], h, l, pos.entry_idx == i, cfg, slip)
             if price is None:
                 continue
             proceeds = pos.shares * price
             fee = proceeds * comm
+            exit_slippage = proceeds * slip / (1 - slip) if reason == "stop_loss" else 0.0
             cash += proceeds - fee
             pnl = proceeds - fee - pos.shares * pos.entry_price - pos.entry_fee
             trades.append({
@@ -163,6 +182,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                 "pnl": pnl,
                 "return_pct": pnl / (pos.shares * pos.entry_price + pos.entry_fee),
                 "holding_days": i - pos.entry_idx,
+                "costs": pos.entry_fee + pos.entry_slippage + fee + exit_slippage,
+                "ambiguous": ambiguous,
             })
             del positions[t]
 

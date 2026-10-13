@@ -61,13 +61,17 @@ def trade_stats(trades: pd.DataFrame) -> dict:
         "Nombre de trades": len(trades),
         "Taux de réussite": len(wins) / len(trades),
         "Gain moyen par trade": trades["return_pct"].mean(),
+        "Gain moyen avant frais": ((trades["pnl"] + trades["costs"])
+                                   / (trades["shares"] * trades["entry_price"])).mean(),
         "Gain moyen (gagnants)": wins["return_pct"].mean() if len(wins) else np.nan,
         "Perte moyenne (perdants)": losses["return_pct"].mean() if len(losses) else np.nan,
         "Profit factor": wins["pnl"].sum() / gross_loss if gross_loss > 0 else np.nan,
         "P&L total réalisé ($)": trades["pnl"].sum(),
+        "Frais et glissement payés ($)": trades["costs"].sum(),
         "Durée moyenne (séances)": trades["holding_days"].mean(),
         "Sorties take profit": int(reasons.get("take_profit", 0)),
         "Sorties stop loss": int(reasons.get("stop_loss", 0)),
+        "Séances ambiguës (stop et objectif touchés)": int(trades["ambiguous"].sum()),
     }
 
 
