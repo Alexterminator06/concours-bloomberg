@@ -63,6 +63,10 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--refresh-universe` | | ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |
 | `--refresh-data` | | ignore le cache des cours (`data/cache/`) |
 
+Les cours téléchargés sont mis en cache dans `data/cache/` (environ 90 Mo par période pour
+2 000 actions). Seuls les 4 fichiers les plus récents sont conservés, et le dossier peut être
+supprimé sans risque.
+
 Au premier lancement, l'univers est enregistré dans `data/universe.csv`. On peut éditer ce fichier
 ou le remplacer par sa propre liste : seule la colonne `symbol` est obligatoire.
 

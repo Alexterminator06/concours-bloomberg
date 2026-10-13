@@ -1,11 +1,13 @@
 """Téléchargement des cours journaliers (OHLCV) depuis Yahoo Finance, avec cache local."""
 
 import hashlib
+import os
 from pathlib import Path
 
 import pandas as pd
 
 FIELDS = ["Open", "High", "Low", "Close", "Volume"]
+MAX_CACHE_FILES = 4  # fichiers de cache conservés (les plus récemment utilisés), ~90 Mo chacun
 
 
 def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
@@ -52,8 +54,33 @@ def load_ohlcv(tickers: list[str], start: str, end: str | None, cache_dir: Path,
     key = hashlib.md5(f"{sorted(tickers)}|{start}|{end}".encode()).hexdigest()[:12]
     path = cache_dir / f"ohlcv_{key}.pkl"
     if path.exists() and not refresh:
-        return pd.read_pickle(path)
+        try:
+            panel = pd.read_pickle(path)
+            path.touch()  # marque le fichier comme récemment utilisé
+            return panel
+        except Exception:
+            print(f"  Cache illisible ({path.name}) : nouveau téléchargement.")
+            path.unlink(missing_ok=True)
     panel = download_ohlcv(tickers, start, end)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    pd.to_pickle(panel, path)
+    _write_cache(panel, path)
     return panel
+
+
+def _write_cache(panel: dict[str, pd.DataFrame], path: Path) -> None:
+    """Écrit le cache via un fichier temporaire, puis supprime les plus anciens.
+
+    Un échec d'écriture (disque plein...) ne laisse aucun fichier tronqué et n'interrompt pas
+    le backtest : on continue simplement sans cache.
+    """
+    tmp = path.with_suffix(".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.to_pickle(panel, tmp)
+        os.replace(tmp, path)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        print(f"  ! Cache non enregistré ({exc.strerror or exc}) : on continue sans cache.")
+        return
+    files = sorted(path.parent.glob("ohlcv_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in files[MAX_CACHE_FILES:] + list(path.parent.glob("ohlcv_*.tmp")):
+        old.unlink(missing_ok=True)
