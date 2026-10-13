@@ -1,16 +1,16 @@
 # Stratégie RSI – small & mid caps US
 
 Stratégie de retour à la moyenne, positions longues uniquement :
-on achète les small et mid caps survendues (RSI sous 30 pendant 2 séances), avec un stop loss et
-un take profit à 5 %. La performance est comparée à un indice équivalent. Toutes les données
-viennent de Yahoo Finance (via `yfinance`).
+on achète les small et mid caps en tendance haussière qui viennent de subir un repli brutal
+(RSI(2) sous 10), avec un stop loss et un take profit à 5 %. La performance est comparée à un
+indice équivalent. Toutes les données viennent de Yahoo Finance (via `yfinance`).
 
 ## Règles
 
 | Élément | Règle |
 |---|---|
 | Univers | Actions US cotées au NYSE / Nasdaq avec une capitalisation de **300 M$ à 10 Md$** (small caps 300 M–2 Md$, mid caps 2–10 Md$), un cours > 5 $ et un volume moyen sur 3 mois > 100 000 titres. La liste vient du screener Yahoo Finance. |
-| Signal d'achat | **RSI(14) < 30 sur 2 séances consécutives** (RSI de Wilder, calculé sur les cours de clôture ajustés). |
+| Signal d'achat | **RSI(2) < 10** à la clôture, et cours **au-dessus de sa moyenne mobile 200 séances** (RSI de Wilder, calculé sur les cours de clôture ajustés). La règle d'origine, RSI(14) < 30 sur 2 séances consécutives sans filtre de tendance, reste disponible : `--rsi-period 14 --rsi-threshold 30 --days 2 --trend-filter 0`. |
 | Fréquence | **Un scan par jour**, après la clôture. L'achat se fait à l'ouverture de la séance suivante, ce qui évite tout biais d'anticipation. |
 | Stop loss | **-5 %** par rapport au prix d'achat. |
 | Take profit | **+5 %** par rapport au prix d'achat. |
@@ -52,8 +52,9 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--capital` | 1000000 | capital de départ |
 | `--position-size` | 0.20 | taille d'une position (fraction de la valeur totale du portefeuille) |
 | `--max-positions` | aucune | nombre maximum de positions simultanées (par défaut, seul le cash limite) |
-| `--rsi-threshold` / `--days` | 30 / 2 | seuil du RSI et nombre de séances consécutives |
-| `--trend-filter N` | 0 (désactivé) | n'acheter que si l'action est au-dessus de sa moyenne mobile N séances (ex. 200) |
+| `--rsi-period` | 2 | nombre de séances du RSI |
+| `--rsi-threshold` / `--days` | 10 / 1 | seuil du RSI et nombre de séances consécutives sous ce seuil |
+| `--trend-filter N` | 200 | n'acheter que si l'action est au-dessus de sa moyenne mobile N séances (0 = désactivé) |
 | `--market-filter N` | 0 (désactivé) | n'acheter que si l'indice principal est au-dessus de sa moyenne mobile N séances (ex. 200) |
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
@@ -92,13 +93,30 @@ Les statistiques des trades séparent ce qui vient du signal et ce qui vient de 
 Pour comparer des variantes de la stratégie, enregistrez chaque run dans son propre dossier :
 
 ```bash
-python -m rsi_strategy backtest --out results/base
-python -m rsi_strategy backtest --trend-filter 200 --out results/tendance
-python -m rsi_strategy backtest --trend-filter 200 --market-filter 200 --out results/tendance_marche
-python -m rsi_strategy backtest --rsi-period 2 --rsi-threshold 10 --days 1 --trend-filter 200 --out results/rsi2
+python -m rsi_strategy backtest --out results/base            # réglages par défaut
+python -m rsi_strategy backtest --rsi-threshold 15 --out results/seuil15
+python -m rsi_strategy backtest --market-filter 200 --out results/marche
+python -m rsi_strategy backtest --rsi-period 14 --rsi-threshold 30 --days 2 --trend-filter 0 --out results/regle_origine
 ```
 
 Pour ne pas sur-optimiser, choisissez les réglages sur une période (par exemple `--start 2019-01-01 --end 2022-12-31`), puis vérifiez-les sur une autre (`--start 2023-01-01`).
+
+## Pourquoi ces réglages
+
+Backtests sans frais, sur l'univers actuel de 2 121 actions, avec les réglages de positions par
+défaut. Les réglages ont été comparés sur 2023-2026, puis vérifiés sur 2019-2023 :
+
+| Variante | 2019-2023 | 2023-2026 |
+|---|---|---|
+| Règle d'origine : RSI(14) < 30 deux séances | non testé | +5 % · 0,14 %/trade |
+| RSI(14) < 30 deux séances + tendance 200 | +11 % · 0,21 %/trade | +19 % · 0,36 %/trade |
+| **RSI(2) < 10 + tendance 200 (défaut)** | **+166 % · 0,66 %/trade** | **+42 % · 0,41 %/trade** |
+| Même chose + filtre de marché 200 | +50 % · 0,45 %/trade | non testé |
+| *Indice SMMD (achat-conservation)* | *+49 %* | *+66 %* |
+
+Les résultats du RSI(2) restent proches avec des seuils de 5 ou 15 : l'avantage ne dépend pas d'un
+réglage précis. Le filtre de marché réduit le drawdown mais coûte beaucoup de rendement ; il est
+désactivé par défaut. Ces chiffres sont flattés par le biais du survivant (voir ci-dessous).
 
 ## Limites
 

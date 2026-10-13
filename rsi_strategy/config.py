@@ -18,14 +18,16 @@ class StrategyConfig:
     min_position_pct: float = 0.02
 
     # --- Signal d'achat ---
-    rsi_period: int = 14
-    rsi_threshold: float = 30.0
+    # RSI(2) < 10 + filtre de tendance 200 séances : variante retenue après les backtests 2019-2026.
+    # Règle d'origine : rsi_period=14, rsi_threshold=30, consecutive_days=2, trend_ma_days=0.
+    rsi_period: int = 2
+    rsi_threshold: float = 10.0
     # Le RSI doit être sous le seuil pendant ce nombre de séances consécutives.
-    consecutive_days: int = 2
+    consecutive_days: int = 1
 
     # --- Filtres de tendance (0 = désactivé) ---
-    # N'acheter que si l'action cote au-dessus de sa moyenne mobile sur N séances (ex. 200).
-    trend_ma_days: int = 0
+    # N'acheter que si l'action cote au-dessus de sa moyenne mobile sur N séances.
+    trend_ma_days: int = 200
     # N'acheter que si l'indice principal (1er de `benchmarks`) cote au-dessus de sa moyenne N séances.
     market_ma_days: int = 0
 

@@ -31,8 +31,11 @@ def set_bar(panel, day, ticker, o, h, l, c):
 
 
 def cfg(**kw) -> StrategyConfig:
+    # Les tests de mécanique d'exécution utilisent la règle d'origine (RSI(14) < 30 deux jours,
+    # sans filtre de tendance), qui se déclenche sur une simple baisse continue.
     base = dict(commission_bps=0.0, slippage_bps=0.0, min_avg_dollar_volume=0.0,
-                avg_volume_window=1)
+                avg_volume_window=1, rsi_period=14, rsi_threshold=30.0, consecutive_days=2,
+                trend_ma_days=0)
     base.update(kw)
     return StrategyConfig(**base)
 
@@ -192,6 +195,22 @@ def test_market_filter(market_trend, expect_trades):
 def test_market_filter_requires_index_prices():
     with pytest.raises(ValueError):
         run_backtest(make_panel({"A": declining()}), cfg(market_ma_days=5))
+
+
+def test_default_signal_is_rsi2_pullback_in_uptrend():
+    defaults = StrategyConfig()
+    assert (defaults.rsi_period, defaults.rsi_threshold, defaults.consecutive_days) == (2, 10.0, 1)
+    assert (defaults.trend_ma_days, defaults.market_ma_days) == (200, 0)
+
+    falling = declining(260)
+    pullback = [100 * 1.005 ** k for k in range(250)]
+    pullback += [pullback[-1] * 0.95 ** k for k in range(1, 11)]
+    panel = make_panel({"FALL": falling, "PULL": pullback})
+    rsi_values, eligible = compute_signals(panel, StrategyConfig(min_avg_dollar_volume=0.0))
+    first = eligible.index[eligible["PULL"]][0]
+    assert first == panel["Close"].index[250]  # dès la première séance de repli
+    assert rsi_values.loc[first, "PULL"] < 10
+    assert not eligible["FALL"].any()  # pas d'achat d'une action en chute durable
 
 
 def test_liquidity_filter_blocks_illiquid_stocks():

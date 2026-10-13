@@ -82,6 +82,18 @@ def config_from_args(args) -> StrategyConfig:
     )
 
 
+def signal_label(cfg: StrategyConfig) -> str:
+    """Description courte du signal d'achat, ex. « RSI(2) < 10, au-dessus de la moyenne 200 j »."""
+    label = f"RSI({cfg.rsi_period}) < {cfg.rsi_threshold:g}"
+    if cfg.consecutive_days > 1:
+        label += f" {cfg.consecutive_days} séances de suite"
+    if cfg.trend_ma_days:
+        label += f", au-dessus de la moyenne {cfg.trend_ma_days} j"
+    if cfg.market_ma_days:
+        label += f", marché au-dessus de sa moyenne {cfg.market_ma_days} j"
+    return label
+
+
 def _universe_tickers(args, cfg: StrategyConfig) -> list[str]:
     universe = load_universe(cfg, args.universe_file, refresh=args.refresh_universe,
                              max_tickers=args.max_tickers)
@@ -140,8 +152,7 @@ def cmd_backtest(args) -> None:
              equity_curve=curves, next_orders=result.next_orders,
              summary=format_table({**perf, **{f"vs {k}": v for k, v in rel.items()}}).reset_index())
     plot_performance(curves, args.out / "performance.png",
-                     f"Stratégie RSI(<{cfg.rsi_threshold:g} sur {cfg.consecutive_days} j) "
-                     f"small & mid caps vs indices")
+                     f"Stratégie {signal_label(cfg)} – small & mid caps vs indices")
     print(f"\nRésultats enregistrés dans {args.out}/")
 
 
@@ -176,8 +187,7 @@ def cmd_scan(args) -> None:
     if cfg.max_positions is not None:
         orders = orders.head(cfg.max_positions)
 
-    print(f"\nSignaux au {last.date()} : RSI({cfg.rsi_period}) < {cfg.rsi_threshold:g} "
-          f"sur {cfg.consecutive_days} séances -> {len(orders)} action(s)")
+    print(f"\nSignaux au {last.date()} : {signal_label(cfg)} -> {len(orders)} action(s)")
     if orders.empty:
         print("Aucune opportunité aujourd'hui.")
         return
