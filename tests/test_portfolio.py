@@ -123,10 +123,13 @@ def test_empty_portfolio_is_rejected():
 
 # --- Take profit selon la tendance et grandes valeurs -------------------------------------------
 
-@pytest.mark.parametrize("bullish, expected", [(True, 0.10), (False, 0.05)])
-def test_take_profit_depends_on_market_trend(bullish, expected):
+@pytest.mark.parametrize("bull_tp, bullish, expected", [
+    (0.10, True, 0.10), (0.10, False, 0.05),
+    (0.0, True, 0.05),  # par défaut, l'objectif reste à 5 % quelle que soit la tendance
+])
+def test_take_profit_depends_on_market_trend(bull_tp, bullish, expected):
     plan = plan_orders(signals(("A", 2.0, 50.0)), portfolio(1_000_000), pd.Series(dtype=float),
-                       StrategyConfig(), bullish=bullish)
+                       StrategyConfig(take_profit_bull_pct=bull_tp), bullish=bullish)
     assert plan.take_profit_pct == expected
 
 

@@ -95,7 +95,8 @@ SOFT UR Equity,Soft Co,0.001,10,100
 
 
 def test_scan_with_portfolio_lists_exact_orders(tmp_path, monkeypatch, capsys):
-    run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,300000,\nHELD,1000,400\n")
+    run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,300000,\nHELD,1000,400\n",
+             extra_args=["--take-profit-bull", "0.10"])
     out = capsys.readouterr().out
     assert "Portefeuille : portefeuille.csv (1 position(s), cash 300 000 $)" in out
     assert "Signaux au" in out and "-> 3 action(s)" in out

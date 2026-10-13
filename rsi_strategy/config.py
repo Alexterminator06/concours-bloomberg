@@ -34,10 +34,11 @@ class StrategyConfig:
     # --- Sorties (en % du prix d'entrée) ---
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.05
-    # Take profit adapté à la tendance : si, au moment du signal, l'indice principal (VT, proche
-    # du WLS) est au-dessus de sa moyenne mobile `bull_ma_days` séances, l'objectif passe à
-    # `take_profit_bull_pct` pour laisser courir les rebonds (0 = toujours `take_profit_pct`).
-    take_profit_bull_pct: float = 0.10
+    # Take profit adapté à la tendance (0 = désactivé, toujours `take_profit_pct`) : si, au moment
+    # du signal, l'indice principal (VT, proche du WLS) est au-dessus de sa moyenne mobile
+    # `bull_ma_days` séances, l'objectif passe à `take_profit_bull_pct`. Désactivé : avec 10 %,
+    # les backtests 2019-2023 et 2023-2026 font nettement moins bien qu'un objectif fixe à 5 %.
+    take_profit_bull_pct: float = 0.0
     bull_ma_days: int = 200
     # Si le stop et l'objectif sont touchés dans la même séance, on ne connaît pas l'ordre
     # avec des données journalières : par prudence on suppose que le stop est touché en premier.
