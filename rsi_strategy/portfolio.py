@@ -1,0 +1,139 @@
+"""Portefeuille réel (positions et cash) et ordres d'achat du jour, pour le scan quotidien."""
+
+import io
+import math
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pandas as pd
+
+from .config import StrategyConfig
+
+CASH_TICKER = "CASH"
+# Les achats sont exécutés à l'ouverture, à un cours encore inconnu la veille au soir. On calcule
+# les quantités comme si l'action ouvrait 2 % plus haut que la dernière clôture : la position reste
+# sous la limite de taille et le total des achats sous le cash disponible.
+PRICE_BUFFER = 0.02
+ORDER_COLUMNS = ["rsi", "dernier_cours", "quantite", "montant_estime", "poids_estime"]
+
+
+@dataclass
+class Portfolio:
+    cash: float
+    positions: pd.DataFrame  # index : ticker ; colonnes : quantite, prix_achat (NaN si inconnu)
+
+
+@dataclass
+class OrderPlan:
+    equity: float               # valeur totale estimée du portefeuille
+    positions: pd.DataFrame     # positions valorisées à la dernière clôture
+    orders: pd.DataFrame        # achats à passer à l'ouverture, dans l'ordre
+    skipped: list[str] = field(default_factory=list)   # signaux non retenus faute de cash
+    unpriced: list[str] = field(default_factory=list)  # positions sans cours récent
+
+
+def _normalize(name: str) -> str:
+    name = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode()
+    return name.strip().lower().replace(" ", "_")
+
+
+def _parse_number(value) -> float:
+    """Accepte « 1234.5 », « 1 234,5 » (Excel en français) ou « 1,234.5 »."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return math.nan
+    text = str(value)
+    for char in (" ", " ", " ", "$", "€"):
+        text = text.replace(char, "")
+    if not text:
+        return math.nan
+    text = text.replace(",", "") if "." in text else text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        raise ValueError(f"valeur numérique invalide : « {value} »") from None
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:  # fichier enregistré par Excel sous Windows
+        return path.read_text(encoding="cp1252")
+
+
+def load_portfolio(path: Path) -> Portfolio:
+    """Lit le portefeuille : colonnes `ticker`, `quantite` et, en option, `prix_achat`.
+
+    Une ligne dont le ticker est `CASH` donne le cash disponible (dans la colonne `quantite`).
+    Les séparateurs `,` et `;` sont acceptés, ainsi que la virgule décimale.
+    """
+    text = _read_text(path)
+    header = text.splitlines()[0] if text.strip() else ""
+    sep = ";" if ";" in header else "\t" if "\t" in header else ","
+    df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, skipinitialspace=True)
+    df.columns = [_normalize(c) for c in df.columns]
+    if "ticker" not in df.columns or "quantite" not in df.columns:
+        raise ValueError(f"{path.name} : colonnes attendues « ticker, quantite, prix_achat ».")
+
+    df["ticker"] = df["ticker"].fillna("").str.strip().str.upper()
+    df = df[df["ticker"] != ""].copy()
+    try:
+        df["quantite"] = df["quantite"].map(_parse_number)
+        df["prix_achat"] = df["prix_achat"].map(_parse_number) if "prix_achat" in df else math.nan
+    except ValueError as exc:
+        raise ValueError(f"{path.name} : {exc}") from None
+
+    is_cash = df["ticker"] == CASH_TICKER
+    if not is_cash.any():
+        raise ValueError(f"{path.name} : ajoutez une ligne « CASH » avec votre cash disponible.")
+    positions = df.loc[~is_cash & (df["quantite"] > 0), ["ticker", "quantite", "prix_achat"]]
+    duplicated = positions["ticker"][positions["ticker"].duplicated()].unique()
+    if len(duplicated):
+        raise ValueError(f"{path.name} : ticker présent plusieurs fois : {', '.join(duplicated)}.")
+    return Portfolio(cash=float(df.loc[is_cash, "quantite"].sum()),
+                     positions=positions.set_index("ticker"))
+
+
+def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Series,
+                cfg: StrategyConfig) -> OrderPlan:
+    """Ordres d'achat du jour selon le cash réel et les positions déjà détenues.
+
+    `signals` : index ticker, colonnes `rsi` et `dernier_cours`, triées par RSI croissant.
+    Mêmes règles que le backtest : chaque position vaut au plus `position_size_pct` de la valeur
+    totale du portefeuille, les signaux sont pris dans l'ordre tant qu'il reste du cash, et on
+    n'ouvre pas de position inférieure à `min_position_pct`.
+    """
+    pos = portfolio.positions.copy()
+    pos["dernier_cours"] = last_prices.reindex(pos.index)
+    unpriced = list(pos.index[pos["dernier_cours"].isna()])
+    pos["dernier_cours"] = pos["dernier_cours"].fillna(pos["prix_achat"])  # à défaut, prix d'achat
+    pos["valeur"] = pos["quantite"] * pos["dernier_cours"]
+    equity = portfolio.cash + pos["valeur"].sum()  # sum() ignore les positions sans aucun prix
+    if equity <= 0:
+        raise ValueError("Portefeuille vide : indiquez votre cash sur la ligne CASH.")
+    pos["poids"] = pos["valeur"] / equity
+    pos["stop_loss"] = pos["prix_achat"] * (1 - cfg.stop_loss_pct)
+    pos["take_profit"] = pos["prix_achat"] * (1 + cfg.take_profit_pct)
+
+    candidates = signals.drop(index=pos.index, errors="ignore")
+    if cfg.max_positions is not None:
+        candidates = candidates.head(max(cfg.max_positions - len(pos), 0))
+
+    target = equity * cfg.position_size_pct
+    minimum = equity * cfg.min_position_pct
+    unit_cost = (1 + PRICE_BUFFER) * (1 + cfg.commission_bps / 1e4)
+    cash_left = portfolio.cash
+    rows, skipped = {}, []
+    for ticker, sig in candidates.iterrows():
+        budget = min(target, cash_left)
+        quantity = int(budget // (sig["dernier_cours"] * unit_cost)) if budget >= minimum else 0
+        if quantity <= 0:
+            skipped.append(ticker)
+            continue
+        cash_left -= quantity * sig["dernier_cours"] * unit_cost
+        amount = quantity * sig["dernier_cours"]
+        rows[ticker] = [sig["rsi"], sig["dernier_cours"], quantity, amount, amount / equity]
+
+    orders = pd.DataFrame.from_dict(rows, orient="index", columns=ORDER_COLUMNS)
+    return OrderPlan(equity=equity, positions=pos, orders=orders, skipped=skipped,
+                     unpriced=unpriced)

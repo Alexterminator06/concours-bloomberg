@@ -45,6 +45,34 @@ python -m rsi_strategy backtest --start 2021-01-01 --end 2025-12-31
 python -m rsi_strategy scan
 ```
 
+## Routine quotidienne pendant le concours
+
+1. **Chaque soir, après la clôture US** (22h, heure de Paris), mettez à jour `portefeuille.csv`
+   avec vos positions et votre cash, tels qu'affichés par la plateforme du concours. Partez du
+   modèle `portefeuille.exemple.csv` :
+
+   ```csv
+   ticker,quantite,prix_achat
+   CASH,612500,
+   KFY,2800,71.02
+   MOV,6400,31.33
+   ```
+
+   La ligne `CASH` donne le cash disponible. Le fichier peut aussi être enregistré depuis Excel
+   (séparateur `;` et virgule décimale acceptés). Il n'est pas envoyé sur GitHub.
+2. **Lancez le scan** : `python -m rsi_strategy scan`. Il affiche la valeur du portefeuille, le
+   poids de chaque position, et la liste des **ordres d'achat** : quelles actions, dans quel ordre
+   et en quelle quantité. Le calcul suit les mêmes règles que le backtest : 20 % maximum de la
+   valeur totale par position, RSI le plus bas d'abord, tant qu'il reste du cash. Les quantités
+   prévoient une marge de 2 %, au cas où l'action ouvrirait plus haut que la dernière clôture.
+   La liste est aussi enregistrée dans `results/ordres_<date>.csv`.
+3. **À l'ouverture suivante**, passez les achats au marché, dans l'ordre de la liste.
+4. **Dès qu'un achat est exécuté**, placez sur la plateforme un stop loss à -5 % et un take profit
+   à +5 % du prix d'exécution. Les ventes se font ensuite toutes seules.
+
+Sans fichier `portefeuille.csv`, le scan affiche les signaux du jour avec des quantités
+indicatives calculées sur `--capital`.
+
 Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète) :
 
 | Option | Défaut | Rôle |
@@ -112,11 +140,16 @@ défaut. Les réglages ont été comparés sur 2023-2026, puis vérifiés sur 20
 | RSI(14) < 30 deux séances + tendance 200 | +11 % · 0,21 %/trade | +19 % · 0,36 %/trade |
 | **RSI(2) < 10 + tendance 200 (défaut)** | **+166 % · 0,66 %/trade** | **+42 % · 0,41 %/trade** |
 | Même chose + filtre de marché 200 | +50 % · 0,45 %/trade | non testé |
+| Même chose, take profit à 10 % | +48 % | +55 % · 0,96 %/trade |
+| Même chose, positions de 15 % | +103 % · 0,43 %/trade | +40 % · 0,34 %/trade |
+| Même chose, positions de 10 % | +78 % · 0,38 %/trade | +18 % · 0,15 %/trade |
 | *Indice SMMD (achat-conservation)* | *+49 %* | *+66 %* |
 
 Les résultats du RSI(2) restent proches avec des seuils de 5 ou 15 : l'avantage ne dépend pas d'un
 réglage précis. Le filtre de marché réduit le drawdown mais coûte beaucoup de rendement ; il est
-désactivé par défaut. Ces chiffres sont flattés par le biais du survivant (voir ci-dessous).
+désactivé par défaut. Le take profit à 10 % fait mieux sur 2023-2026 mais beaucoup moins bien sur
+2019-2023 : on garde 5 %. Des positions plus petites obligent à prendre des signaux moins survendus,
+qui rapportent moins : on garde 20 %, et il faut respecter l'ordre du scan. Ces chiffres sont flattés par le biais du survivant (voir ci-dessous).
 
 ## Limites
 

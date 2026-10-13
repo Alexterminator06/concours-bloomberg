@@ -14,6 +14,7 @@ from .backtest import compute_signals, run_backtest
 from .config import StrategyConfig
 from .data import download_ohlcv, load_ohlcv
 from .metrics import benchmark_equity, performance_stats, relative_stats, trade_stats
+from .portfolio import load_portfolio, plan_orders
 from .report import format_table, plot_performance, print_section, save_csv
 from .universe import load_universe
 
@@ -65,7 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--start", default=(date.today() - timedelta(days=3 * 365)).isoformat())
     bt.add_argument("--end", default=date.today().isoformat())
     bt.add_argument("--out", type=Path, default=ROOT / "results")
-    sub.add_parser("scan", parents=[common], help="lister les signaux d'achat du jour")
+    sc = sub.add_parser("scan", parents=[common], help="lister les ordres d'achat du jour")
+    sc.add_argument("--portfolio-file", type=Path, default=ROOT / "portefeuille.csv",
+                    help="positions et cash actuels (défaut : portefeuille.csv s'il existe)")
     return parser
 
 
@@ -156,12 +159,26 @@ def cmd_backtest(args) -> None:
     print(f"\nRésultats enregistrés dans {args.out}/")
 
 
+def _money(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
+
+
 def cmd_scan(args) -> None:
     cfg = config_from_args(args)
     tickers = _universe_tickers(args, cfg)
+    portfolio = None
+    if args.portfolio_file.exists():
+        try:
+            portfolio = load_portfolio(args.portfolio_file)
+        except ValueError as exc:
+            raise SystemExit(f"Erreur dans le portefeuille : {exc}")
+        print(f"Portefeuille : {args.portfolio_file.name} ({len(portfolio.positions)} position(s), "
+              f"cash {_money(portfolio.cash)} $)")
+    held = [] if portfolio is None else list(portfolio.positions.index)
+
     start = (date.today() - timedelta(days=WARMUP_DAYS)).isoformat()
     end = (date.today() + timedelta(days=1)).isoformat()
-    panel = download_ohlcv(tickers, start, end)
+    panel = download_ohlcv(sorted(set(tickers) | set(held)), start, end)
     market_close = None
     if cfg.market_ma_days:
         market_close = download_ohlcv([cfg.benchmarks[0]], start, end)["Close"].iloc[:, 0]
@@ -173,33 +190,92 @@ def cmd_scan(args) -> None:
         print(f"Filtre de marché : {cfg.benchmarks[0]} "
               f"{'au-dessus' if bullish else 'en dessous'} de sa moyenne {cfg.market_ma_days} séances"
               f"{'' if bullish else ' -> aucun achat'}")
-    hits = eligible.columns[eligible.loc[last].to_numpy(dtype=bool)]
-    close = panel["Close"].loc[last, hits]
-    budget = cfg.initial_capital * cfg.position_size_pct
-    orders = pd.DataFrame({
+    today = eligible.loc[last, eligible.columns.intersection(tickers)]
+    hits = today.index[today.to_numpy(dtype=bool)]
+    signals = pd.DataFrame({
         "rsi": rsi_values.loc[last, hits],
         "rsi_veille": rsi_values.shift(1).loc[last, hits],
-        "dernier_cours": close,
-        "quantite_indicative": (budget // close).astype(int),
-        "stop_loss_indicatif": close * (1 - cfg.stop_loss_pct),
-        "take_profit_indicatif": close * (1 + cfg.take_profit_pct),
-    }).sort_values("rsi").round(2)
-    if cfg.max_positions is not None:
-        orders = orders.head(cfg.max_positions)
+        "dernier_cours": panel["Close"].loc[last, hits],
+    }).sort_values("rsi")
 
-    print(f"\nSignaux au {last.date()} : {signal_label(cfg)} -> {len(orders)} action(s)")
-    if orders.empty:
+    print(f"\nSignaux au {last.date()} : {signal_label(cfg)} -> {len(signals)} action(s)")
+    out_dir = ROOT / "results"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if portfolio is None:
+        _print_indicative_orders(signals, cfg, out_dir / f"signals_{last.date()}.csv")
+    else:
+        try:
+            plan = plan_orders(signals, portfolio, panel["Close"].ffill().iloc[-1], cfg)
+        except ValueError as exc:
+            raise SystemExit(f"Erreur dans le portefeuille : {exc}")
+        _print_portfolio_orders(plan, portfolio, cfg, last, out_dir / f"ordres_{last.date()}.csv")
+
+
+def _print_indicative_orders(signals: pd.DataFrame, cfg: StrategyConfig, out: Path) -> None:
+    """Sans fichier de portefeuille : signaux du jour avec un budget indicatif sur `--capital`."""
+    if cfg.max_positions is not None:
+        signals = signals.head(cfg.max_positions)
+    if signals.empty:
         print("Aucune opportunité aujourd'hui.")
         return
+    budget = cfg.initial_capital * cfg.position_size_pct
+    orders = signals.assign(
+        quantite_indicative=(budget // signals["dernier_cours"]).astype(int),
+        stop_loss_indicatif=signals["dernier_cours"] * (1 - cfg.stop_loss_pct),
+        take_profit_indicatif=signals["dernier_cours"] * (1 + cfg.take_profit_pct),
+    ).round(2)
     print(orders.to_string())
-    print(f"\nBudget par position : {budget:,.0f} $ ({cfg.position_size_pct:.0%} du capital). "
-          f"Acheter dans l'ordre du tableau (RSI le plus bas d'abord) tant qu'il reste du cash. "
-          f"Achat à l'ouverture ; stop loss et take profit à recalculer sur le prix d'exécution "
-          f"réel (-{cfg.stop_loss_pct:.0%} / +{cfg.take_profit_pct:.0%}).".replace(",", " "))
-    out = ROOT / "results" / f"signals_{last.date()}.csv"
-    out.parent.mkdir(parents=True, exist_ok=True)
+    print(f"\nBudget par position : {_money(budget)} $ ({cfg.position_size_pct:.0%} du capital). "
+          f"Acheter dans l'ordre du tableau (RSI le plus bas d'abord) tant qu'il reste du cash, "
+          f"puis placer stop loss et take profit à -{cfg.stop_loss_pct:.0%} / "
+          f"+{cfg.take_profit_pct:.0%} du prix d'exécution.\n"
+          f"Pour des quantités calculées sur votre cash réel, créez portefeuille.csv "
+          f"(modèle : portefeuille.exemple.csv).")
     orders.to_csv(out)
     print(f"Enregistré dans {out}")
+
+
+def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Path) -> None:
+    """Avec le fichier de portefeuille : ordres exacts à passer à l'ouverture suivante."""
+    print(f"\n=== Portefeuille au {last.date()} ===")
+    print(f"Valeur totale estimée : {_money(plan.equity)} $ · cash {_money(portfolio.cash)} $ "
+          f"({portfolio.cash / plan.equity:.0%}) · taille d'une position : "
+          f"{_money(plan.equity * cfg.position_size_pct)} $ ({cfg.position_size_pct:.0%})")
+    if not plan.positions.empty:
+        shown = plan.positions.round({"prix_achat": 2, "dernier_cours": 2, "valeur": 0,
+                                      "stop_loss": 2, "take_profit": 2})
+        if (shown["quantite"] % 1 == 0).all():
+            shown["quantite"] = shown["quantite"].astype(int)
+        shown["poids"] = shown["poids"].map("{:.1%}".format)
+        print(shown.to_string())
+    for ticker in plan.unpriced:
+        print(f"  ! {ticker} : aucun cours récent trouvé, valorisé au prix d'achat.")
+    for ticker, weight in plan.positions["poids"].items():
+        if weight > cfg.position_size_pct:
+            print(f"  ! {ticker} pèse {weight:.1%} du portefeuille "
+                  f"(limite {cfg.position_size_pct:.0%}).")
+
+    print("\n=== Ordres d'achat pour l'ouverture ===")
+    if plan.orders.empty:
+        print("Aucun achat : " + ("pas de nouveau signal aujourd'hui." if not plan.skipped else
+              f"pas assez de cash pour une position d'au moins {cfg.min_position_pct:.0%} "
+              f"du portefeuille."))
+    else:
+        shown = plan.orders.round({"rsi": 2, "dernier_cours": 2, "montant_estime": 0})
+        shown["poids_estime"] = shown["poids_estime"].map("{:.1%}".format)
+        print(shown.to_string())
+        spent = plan.orders["montant_estime"].sum()
+        print(f"\nMontant estimé : {_money(spent)} $ · cash restant estimé : "
+              f"{_money(portfolio.cash - spent)} $")
+        print("\nÀ faire :\n"
+              "  1. À l'ouverture, acheter ces actions au marché, dans l'ordre du tableau.\n"
+              f"  2. Pour chaque achat exécuté, placer un stop loss à -{cfg.stop_loss_pct:.0%} et "
+              f"un take profit à +{cfg.take_profit_pct:.0%} du prix d'exécution.\n"
+              "  3. Mettre à jour portefeuille.csv (positions, prix d'achat et cash).")
+        plan.orders.to_csv(out)
+        print(f"Enregistré dans {out}")
+    if plan.skipped:
+        print(f"Signaux non retenus faute de cash : {', '.join(plan.skipped)}")
 
 
 def main(argv: list[str] | None = None) -> None:
