@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from rsi_strategy import StrategyConfig, compute_signals, oversold_signal, rsi, run_backtest
-from rsi_strategy.metrics import performance_stats
+from rsi_strategy.metrics import performance_stats, relative_stats
 
 SIGNAL_DAY, ENTRY_DAY = 15, 16  # premier jour où RSI(14) < 30 deux jours de suite sur une baisse continue
 
@@ -275,3 +275,10 @@ def test_performance_stats():
     stats = performance_stats(pd.Series([100.0, 120.0, 90.0, 110.0], index=idx))
     assert stats["Rendement total"] == pytest.approx(0.10)
     assert stats["Max drawdown"] == pytest.approx(-0.25)
+
+
+def test_relative_return_is_the_gap_in_total_return():
+    idx = pd.bdate_range("2024-01-01", periods=3)
+    strategy = pd.Series([100.0, 110.0, 130.0], index=idx)
+    world = pd.Series([100.0, 105.0, 110.0], index=idx)
+    assert relative_stats(strategy, world)["Rendement relatif"] == pytest.approx(0.20)

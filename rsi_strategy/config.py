@@ -48,8 +48,11 @@ class StrategyConfig:
     avg_volume_window: int = 20
 
     # --- Indices de comparaison (ETF, cours ajustés des dividendes) ---
-    # SMMD = iShares Russell 2500 (small + mid caps US), IWM = Russell 2000, IJH = S&P MidCap 400.
-    benchmarks: list[str] = field(default_factory=lambda: ["SMMD", "IWM", "IJH"])
+    # L'indice du concours est le WLS (Bloomberg World Large, Mid & Small Cap), absent de Yahoo
+    # Finance. VT (Vanguard Total World Stock : actions mondiales de toutes tailles) est l'ETF qui
+    # s'en rapproche le plus ; c'est l'indice principal. SMMD (Russell 2500) et IWM (Russell 2000)
+    # représentent les small & mid caps US, l'univers de la stratégie.
+    benchmarks: list[str] = field(default_factory=lambda: ["VT", "SMMD", "IWM"])
 
     # --- Univers (screener Yahoo Finance) ---
     min_market_cap: float = 300e6   # small caps : 300 M$ – 2 Md$

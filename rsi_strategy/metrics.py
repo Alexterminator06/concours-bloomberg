@@ -30,8 +30,14 @@ def performance_stats(equity: pd.Series, risk_free: float = 0.0) -> dict:
     }
 
 
+def _total_return(equity: pd.Series) -> float:
+    equity = equity.dropna()
+    return equity.iloc[-1] / equity.iloc[0] - 1
+
+
 def relative_stats(strategy: pd.Series, benchmark: pd.Series, risk_free: float = 0.0) -> dict:
-    """Bêta, alpha de Jensen, corrélation, tracking error et ratio d'information vs l'indice."""
+    """Rendement relatif, bêta, alpha de Jensen, corrélation, tracking error et ratio
+    d'information de la stratégie par rapport à l'indice."""
     rets = pd.concat([strategy.pct_change(), benchmark.pct_change()], axis=1).dropna()
     rets.columns = ["s", "b"]
     rf = risk_free / TRADING_DAYS
@@ -41,6 +47,7 @@ def relative_stats(strategy: pd.Series, benchmark: pd.Series, risk_free: float =
     active = rets["s"] - rets["b"]
     te = active.std() * np.sqrt(TRADING_DAYS)
     return {
+        "Rendement relatif": _total_return(strategy) - _total_return(benchmark),
         "Bêta": beta,
         "Alpha annualisé": alpha,
         "Corrélation": rets["s"].corr(rets["b"]),

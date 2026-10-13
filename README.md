@@ -17,7 +17,7 @@ indice équivalent. Toutes les données viennent de Yahoo Finance (via `yfinance
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
 | Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
-| Indice de comparaison | **SMMD** (iShares Russell 2500 : small + mid caps US) comme indice principal. **IWM** (Russell 2000) et **IJH** (S&P MidCap 400) sont affichés à titre indicatif. On compare en achat-conservation, cours ajustés des dividendes. |
+| Indice de comparaison | L'indice du concours est le **WLS** (Bloomberg World Large, Mid & Small Cap : actions mondiales de toutes tailles, hors dividendes). Il n'est pas disponible sur Yahoo Finance : le backtest utilise **VT** (Vanguard Total World Stock), l'ETF qui s'en rapproche le plus, comme indice principal. **SMMD** (Russell 2500) et **IWM** (Russell 2000), qui représentent les small & mid caps US, sont affichés à titre indicatif. On compare en achat-conservation, cours ajustés des dividendes, et la ligne « Rendement relatif » donne l'écart de rendement total avec chaque indice. |
 
 Hypothèses du backtest. Elles portent sur des points que l'énoncé ne précisait pas, et toutes se modifient en ligne de commande :
 
@@ -87,7 +87,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
 | `--commission-bps` / `--slippage-bps` | 0 / 0 | coûts de transaction, en points de base (1 pb = 0,01 %) |
-| `--benchmarks` | SMMD IWM IJH | ETF de comparaison (le premier est l'indice principal) |
+| `--benchmarks` | VT SMMD IWM | ETF de comparaison (le premier est l'indice principal) |
 | `--max-tickers N` | tous | limite l'univers aux N plus grosses capitalisations, pour un essai rapide |
 | `--refresh-universe` | | ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |
 | `--refresh-data` | | ignore le cache des cours (`data/cache/`) |
@@ -143,7 +143,7 @@ défaut. Les réglages ont été comparés sur 2023-2026, puis vérifiés sur 20
 | Même chose, take profit à 10 % | +48 % | +55 % · 0,96 %/trade |
 | Même chose, positions de 15 % | +103 % · 0,43 %/trade | +40 % · 0,34 %/trade |
 | Même chose, positions de 10 % | +78 % · 0,38 %/trade | +18 % · 0,15 %/trade |
-| *Indice SMMD (achat-conservation)* | *+49 %* | *+66 %* |
+| *Indice SMMD, small & mid caps US (achat-conservation)* | *+49 %* | *+66 %* |
 
 Les résultats du RSI(2) restent proches avec des seuils de 5 ou 15 : l'avantage ne dépend pas d'un
 réglage précis. Le filtre de marché réduit le drawdown mais coûte beaucoup de rendement ; il est
@@ -158,8 +158,14 @@ qui rapportent moins : on garde 20 %, et il faut respecter l'ordre du scan. Ces 
   tend à flatter le backtest.
 - **Données journalières** : l'ordre de passage du stop et de l'objectif dans une même séance est
   inconnu. Le cas est traité de façon prudente (voir plus haut).
+- **VT et le WLS** : le WLS ne compte pas les dividendes, alors que VT est comparé dividendes
+  réinvestis. VT surestime donc le WLS d'environ son rendement en dividendes (de l'ordre de 2 %
+  par an), ce qui rend la comparaison un peu défavorable à la stratégie.
+- **Actions autorisées** : le concours n'accepte que les actions membres du WLS. Les plus petites
+  capitalisations de l'univers (autour de 300 M$) peuvent ne pas en faire partie : vérifiez sur le
+  terminal Bloomberg avant d'acheter.
 - **SMMD** n'existe que depuis juillet 2017. Pour un backtest antérieur, utiliser par exemple
-  `--benchmarks IWM IJH`.
+  `--benchmarks VT IWM`.
 
 ## Tests
 

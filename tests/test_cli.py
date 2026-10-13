@@ -35,7 +35,8 @@ def test_backtest_command_writes_results(tmp_path, monkeypatch, capsys):
     for name in ["trades.csv", "equity_curve.csv", "summary.csv", "performance.png", "next_orders.csv"]:
         assert (tmp_path / name).exists(), name
     curves = pd.read_csv(tmp_path / "equity_curve.csv", index_col=0)
-    assert list(curves.columns) == ["Stratégie RSI", "SMMD", "IWM", "IJH"]
+    assert list(curves.columns) == ["Stratégie RSI", "VT", "SMMD", "IWM"]
+    assert "Rendement relatif" in out
     assert (curves.iloc[0] == 1_000_000).all()
 
 

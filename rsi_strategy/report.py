@@ -5,14 +5,15 @@ from pathlib import Path
 import pandas as pd
 
 # Palette catégorielle (ordre fixe : stratégie puis indices) et couleurs de texte / fond.
-SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
+SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                 "#e87ba4", "#008300", "#6250d6", "#e34948"]
 SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 GRID = "#e4e3df"
 
-PCT_KEYS = {"Rendement total", "Rendement annualisé", "Volatilité annualisée", "Max drawdown",
-            "Alpha annualisé", "Tracking error", "Taux de réussite", "Gain moyen par trade",
+PCT_KEYS = {"Rendement total", "Rendement relatif", "Rendement annualisé", "Volatilité annualisée",
+            "Max drawdown", "Alpha annualisé", "Tracking error", "Taux de réussite", "Gain moyen par trade",
             "Gain moyen (gagnants)", "Perte moyenne (perdants)", "Exposition moyenne",
             "Gain moyen avant frais"}
 MONEY_KEYS = {"Valeur finale ($)", "P&L total réalisé ($)", "Frais et glissement payés ($)"}
