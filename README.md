@@ -100,6 +100,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
 | `--take-profit-bull` | 0 (désactivé) | take profit quand VT est au-dessus de sa moyenne 200 séances (ex. 0.10) |
 | `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
+| `--core-min` | 0 | part du portefeuille réservée aux grandes valeurs, ex. 0.5 : les achats RSI n'utilisent que le reste |
 | `--wls-file` | `data/wls_members.csv` | membres US du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
 | `--commission-bps` / `--slippage-bps` | 0 / 0 | coûts de transaction, en points de base (1 pb = 0,01 %) |
@@ -173,14 +174,24 @@ petites obligent à prendre des signaux moins survendus, qui rapportent moins : 
 faut respecter l'ordre du scan. Ces chiffres sont flattés par le biais du survivant (voir
 ci-dessous).
 
-Ces backtests ont été faits sur l'univers Yahoo, avant l'univers WLS et le placement du cash dans
-les grandes valeurs. Pour mesurer l'effet des grandes valeurs, comparez sur les deux périodes :
+Ces backtests ont été faits sur l'univers Yahoo, qui contenait des actions refusées par le
+concours (fonds cotés comme OXLC ou KYN, sociétés étrangères…). Limitée aux membres du WLS, la
+stratégie est nettement moins bonne :
+
+| RSI(2) < 10 + tendance 200, take profit 5 % | 2019-2023 | 2023-2026 | Environ 7 ans |
+|---|---|---|---|
+| Univers Yahoo | +166 % · 0,66 %/trade | +42 % · 0,41 %/trade | +278 % |
+| **Univers WLS (actions autorisées)** | **+66 % · 0,30 %/trade** | **+20 % · 0,18 %/trade** | **+99 %** |
+| Indice VT (≈ WLS) | +57 % | +80 % | +182 % |
+
+Sur l'univers WLS, le gain moyen par trade reste positif (environ +0,25 % sur ~1 750 trades), mais
+la stratégie ne bat VT que sur 2019-2023. Avec le cash restant seulement, les grandes valeurs ne
+pèsent en moyenne que 0,2 à 1,4 % du portefeuille : les achats RSI prennent presque tout le cash.
+L'option `--core-min` leur réserve une part fixe, pour suivre davantage le marché :
 
 ```bash
-python -m rsi_strategy backtest --out results/wls
-python -m rsi_strategy backtest --core-size 0 --out results/wls_sans_gv
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_wls
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-size 0 --out results/oos_wls_sans_gv
+python -m rsi_strategy backtest --core-min 0.5 --out results/gv50
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-min 0.5 --out results/oos_gv50
 ```
 
 Dans le backtest, les grandes valeurs sont choisies chaque mois parmi les 100 plus gros membres

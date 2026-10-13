@@ -49,6 +49,9 @@ class StrategyConfig:
     # capitalisations US du WLS, à parts à peu près égales, sans stop ni objectif. Elles sont
     # vendues en priorité pour financer les achats RSI. Nécessite la liste des membres du WLS.
     core_size: int = 10
+    # Part minimale du portefeuille réservée aux grandes valeurs (0 = seulement le cash restant).
+    # Les achats RSI ne peuvent alors utiliser que (1 - core_min_pct) de la valeur totale.
+    core_min_pct: float = 0.0
     # Backtest : candidates (plus gros poids actuels du WLS) parmi lesquelles on retient chaque mois
     # les `core_size` plus grandes capitalisations de l'époque.
     core_pool_size: int = 100

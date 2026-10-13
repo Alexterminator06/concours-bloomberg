@@ -252,7 +252,11 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
             cash += core.sell_non_members(open_px)
 
         # 1. Achats RSI à l'ouverture (ordres de la veille, du RSI le plus bas au plus haut),
-        #    financés si besoin en vendant des grandes valeurs.
+        #    financés si besoin en vendant des grandes valeurs, sans entamer leur part réservée.
+        rsi_room = math.inf
+        if core is not None and cfg.core_min_pct:
+            rsi_open = sum(p.shares * open_px[col[t]] for t, p in positions.items())
+            rsi_room = (1 - cfg.core_min_pct) * prev_equity - rsi_open
         for order in pending:
             j = col[order["ticker"]]
             px_open = O[i, j]
@@ -260,7 +264,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                 continue  # pas de cotation : l'ordre est annulé
             fill = px_open * (1 + slip)
             liquidity = cash + (core.value(open_px) if core is not None else 0.0)
-            budget = min(order["budget"], liquidity)
+            budget = min(order["budget"], liquidity, rsi_room)
             shares = int(budget // (fill * (1 + comm)))
             if shares <= 0 or budget < order["min_budget"]:
                 continue
@@ -271,6 +275,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                     continue
             fee = shares * fill * comm
             cash -= shares * fill + fee
+            rsi_room -= shares * fill + fee
             tp = order["take_profit_pct"]
             positions[order["ticker"]] = Position(
                 ticker=order["ticker"], shares=shares, entry_date=d, entry_idx=i,

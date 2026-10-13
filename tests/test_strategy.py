@@ -373,3 +373,17 @@ def test_accounting_with_largest_stocks_on_random_walks():
     unrealized = res.open_positions["unrealized_pnl"].sum() if not res.open_positions.empty else 0.0
     assert eq["equity"].iloc[-1] - c.initial_capital == pytest.approx(
         res.trades["pnl"].sum() + unrealized + res.core_pnl)
+
+
+def test_reserved_share_of_largest_stocks_limits_rsi_buys():
+    small = {f"S{k}": declining(40) for k in range(6)}  # signaux RSI tous les jours dès la 15e séance
+    big = {f"B{k}": [100.0] * 40 for k in range(1, 6)}
+    panel = make_panel({**small, **big})
+    shares = pd.Series({f"B{k}": float(10 - k) for k in range(1, 6)})
+    res = run_backtest(panel, cfg(core_size=5, core_min_pct=0.5), core_shares=shares)
+    eq = res.equity
+    rsi_share = (eq["invested"] - eq["core"]) / eq["equity"]
+    assert rsi_share.max() <= 0.5 + 0.01  # à l'achat, au plus 50 % en RSI
+    assert rsi_share.iloc[ENTRY_DAY] > 0.45  # et la place est bien utilisée
+    assert (eq["core"] / eq["equity"]).iloc[ENTRY_DAY:].min() > 0.45
+    assert (eq["cash"] >= -1e-6).all()

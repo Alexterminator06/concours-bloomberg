@@ -154,15 +154,20 @@ def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Ser
     if cfg.max_positions is not None:
         candidates = candidates.head(max(cfg.max_positions - int((~is_core).sum()), 0))
     liquidity = cash + sum(kept.values()) * sell_unit
+    # Part réservée aux grandes valeurs : les achats RSI n'utilisent que le reste.
+    rsi_room = math.inf
+    if members and cfg.core_min_pct:
+        rsi_room = (1 - cfg.core_min_pct) * equity - pos.loc[~is_core, "valeur"].sum()
     spent = 0.0
     rows, skipped = {}, []
     for ticker, sig in candidates.iterrows():
-        budget = min(target, liquidity)
+        budget = min(target, liquidity, rsi_room)
         quantity = int(budget // (sig["dernier_cours"] * buy_unit)) if budget >= minimum else 0
         if quantity <= 0:
             skipped.append(ticker)
             continue
         liquidity -= quantity * sig["dernier_cours"] * buy_unit
+        rsi_room -= quantity * sig["dernier_cours"] * buy_unit
         spent += quantity * sig["dernier_cours"] * buy_unit
         amount = quantity * sig["dernier_cours"]
         rows[ticker] = [sig["rsi"], sig["dernier_cours"], quantity, amount, amount / equity]

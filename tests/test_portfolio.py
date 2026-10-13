@@ -168,3 +168,14 @@ def test_stocks_leaving_the_ranking_are_sold_and_reinvested():
                        core_members=["M1", "M2"], core_universe=["OLD", "M1", "M2"])
     assert plan.core_sells.loc["OLD", "quantite"] == 1_000
     assert list(plan.core_buys.index) == ["M2"]  # la grande valeur la moins représentée
+
+
+def test_reserved_share_of_largest_stocks_in_daily_orders():
+    prices = pd.Series({t: 100.0 for t in BIG})
+    sig = signals(("A", 1.0, 50.0), ("B", 2.0, 50.0), ("C", 3.0, 50.0), ("D", 4.0, 50.0))
+    plan = plan_orders(sig, portfolio(1_000_000), prices, StrategyConfig(core_min_pct=0.5),
+                       core_members=BIG, core_universe=BIG)
+    rsi_cost = (plan.orders["montant_estime"] * (1 + PRICE_BUFFER)).sum()
+    assert rsi_cost <= 500_000 + 1e-6
+    assert list(plan.orders.index) == ["A", "B", "C"]  # 20 % + 20 % + le reste des 50 %
+    assert plan.core_buys["montant_estime"].sum() > 450_000

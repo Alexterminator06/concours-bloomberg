@@ -62,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
                         f"{defaults.bull_ma_days} séances (0 = toujours --take-profit)")
     s.add_argument("--core-size", type=int, default=defaults.core_size,
                    help="nombre de grandes valeurs où placer le cash inutilisé (0 = désactivé)")
+    s.add_argument("--core-min", type=float, default=defaults.core_min_pct,
+                   help="part du portefeuille réservée aux grandes valeurs, ex. 0.5 (défaut 0 : "
+                        "seulement le cash que les achats RSI n'utilisent pas)")
     s.add_argument("--take-profit-first", action="store_true",
                    help="si stop et objectif sont touchés la même séance, retenir l'objectif "
                         "(hypothèse optimiste ; par défaut on retient le stop)")
@@ -93,6 +96,7 @@ def config_from_args(args) -> StrategyConfig:
         trend_ma_days=args.trend_filter, market_ma_days=args.market_filter,
         stop_loss_pct=args.stop_loss, take_profit_pct=args.take_profit,
         take_profit_bull_pct=args.take_profit_bull, core_size=args.core_size,
+        core_min_pct=args.core_min,
         stop_first_if_ambiguous=not args.take_profit_first,
         commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
         benchmarks=args.benchmarks,
@@ -128,6 +132,12 @@ def _universe(args, cfg: StrategyConfig) -> tuple[list[str], pd.DataFrame | None
     if cfg.core_size and wls is None:
         print("  ! Grandes valeurs désactivées : elles demandent la liste du WLS (import-wls).")
     return [t for t in universe["symbol"].astype(str) if t not in cfg.benchmarks], wls
+
+
+def _core_label(cfg: StrategyConfig) -> str:
+    if cfg.core_min_pct:
+        return f"au moins {cfg.core_min_pct:.0%} du portefeuille et le cash restant"
+    return "cash restant"
 
 
 def _needs_market(cfg: StrategyConfig) -> bool:
@@ -193,7 +203,7 @@ def cmd_backtest(args) -> None:
           f"capital initial {cfg.initial_capital:,.0f} $".replace(",", " "))
     print(f"Signal : {signal_label(cfg)} · stop -{cfg.stop_loss_pct:.0%} · take profit "
           f"{take_profit_label(cfg)}"
-          + (f" · cash restant dans les {cfg.core_size} plus grandes valeurs US du WLS"
+          + (f" · {_core_label(cfg)} dans les {cfg.core_size} plus grandes valeurs US du WLS"
              if core_shares is not None else ""))
     print_section("Performance : stratégie vs indices", format_table(perf))
     if rel:
