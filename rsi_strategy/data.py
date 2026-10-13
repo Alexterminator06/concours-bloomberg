@@ -1,6 +1,7 @@
 """Téléchargement des cours journaliers (OHLCV) depuis Yahoo Finance, avec cache local."""
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 
@@ -17,20 +18,28 @@ def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
     """
     import yfinance as yf
 
+    # yfinance affiche une erreur par action sans cours sur la période (introductions en bourse
+    # récentes, par exemple) : on les masque et on affiche un résumé à la place.
+    yf_logger = logging.getLogger("yfinance")
+    previous_level = yf_logger.level
+    yf_logger.setLevel(logging.CRITICAL)
     frames = {f: [] for f in FIELDS}
-    for i in range(0, len(tickers), chunk_size):
-        chunk = tickers[i:i + chunk_size]
-        print(f"  Téléchargement {i + 1}-{i + len(chunk)} / {len(tickers)} ...")
-        raw = yf.download(chunk, start=start, end=end, auto_adjust=True, actions=False,
-                          group_by="column", threads=True, progress=False,
-                          multi_level_index=True)
-        if raw is None or raw.empty:
-            continue
-        for f in FIELDS:
-            part = raw[f]
-            if isinstance(part, pd.Series):  # un seul ticker
-                part = part.to_frame(chunk[0])
-            frames[f].append(part)
+    try:
+        for i in range(0, len(tickers), chunk_size):
+            chunk = tickers[i:i + chunk_size]
+            print(f"  Téléchargement {i + 1}-{i + len(chunk)} / {len(tickers)} ...")
+            raw = yf.download(chunk, start=start, end=end, auto_adjust=True, actions=False,
+                              group_by="column", threads=True, progress=False,
+                              multi_level_index=True)
+            if raw is None or raw.empty:
+                continue
+            for f in FIELDS:
+                part = raw[f]
+                if isinstance(part, pd.Series):  # un seul ticker
+                    part = part.to_frame(chunk[0])
+                frames[f].append(part)
+    finally:
+        yf_logger.setLevel(previous_level)
 
     if not frames["Close"]:
         raise RuntimeError("Aucune donnée téléchargée depuis Yahoo Finance.")
@@ -44,6 +53,10 @@ def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
 
     # On écarte les tickers sans aucune donnée et les jours sans aucune cotation.
     valid_cols = panel["Close"].columns[panel["Close"].notna().any()]
+    missing = len(set(tickers) - set(valid_cols))
+    if missing:
+        print(f"  {missing} action(s) sans cours sur la période (cotées plus tard ou retirées "
+              f"de la cote) : ignorées.")
     valid_rows = panel["Close"].index[panel["Close"].notna().any(axis=1)]
     return {f: df.loc[valid_rows, valid_cols] for f, df in panel.items()}
 

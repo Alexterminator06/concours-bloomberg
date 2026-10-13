@@ -57,3 +57,27 @@ def test_old_cache_files_are_pruned(tmp_path, fake_download):
         newest = max(tmp_path.glob("ohlcv_*.pkl"), key=os.path.getmtime)
         os.utime(newest, (1_000_000 + k, 1_000_000 + k))  # horodatages distincts
     assert len(list(tmp_path.glob("ohlcv_*.pkl"))) == data.MAX_CACHE_FILES
+
+
+def test_download_summarises_tickers_without_prices(monkeypatch, capsys):
+    import logging
+
+    import yfinance as yf
+
+    def fake_yf_download(chunk, start, end, **kwargs):
+        logging.getLogger("yfinance").error("$NEW: Data doesn't exist")
+        idx = pd.bdate_range(start, periods=3)
+        cols = pd.MultiIndex.from_product([data.FIELDS, chunk])
+        raw = pd.DataFrame(1.0, index=idx, columns=cols)
+        raw.loc[:, (slice(None), "NEW")] = float("nan")  # introduite en bourse plus tard
+        return raw
+
+    monkeypatch.setattr(yf, "download", fake_yf_download)
+    level = logging.getLogger("yfinance").level
+    panel = data.download_ohlcv(["OLD", "NEW"], "2019-01-01", "2019-02-01")
+
+    assert list(panel["Close"].columns) == ["OLD"]
+    out = capsys.readouterr()
+    assert "1 action(s) sans cours sur la période" in out.out
+    assert "Data doesn't exist" not in out.err
+    assert logging.getLogger("yfinance").level == level
