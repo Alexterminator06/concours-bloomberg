@@ -23,7 +23,7 @@ Hypothèses du backtest. Elles portent sur des points que l'énoncé ne précisa
 
 - **Gap à l'ouverture** : si le cours ouvre déjà sous le stop (ou au-dessus de l'objectif), la position est vendue au cours d'ouverture.
 - **Stop et objectif touchés la même séance** : les données journalières ne disent pas lequel est venu en premier. Par prudence, on retient le stop.
-- **Coûts** : 5 pb de commission par ordre, plus 5 pb de glissement sur les achats et les stops. Le take profit est un ordre limite, donc sans glissement.
+- **Coûts** : aucun par défaut, car le concours Bloomberg ne facture pas de frais de transaction. On peut simuler une commission et un glissement avec `--commission-bps` et `--slippage-bps`. Le glissement s'applique aux achats et aux stops ; le take profit est un ordre limite, donc sans glissement.
 - **Liquidité** : au moment du signal, on exige un cours ≥ 5 $ et un volume moyen sur 20 séances ≥ 1 M$ par jour.
 
 ## Installation
@@ -57,7 +57,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--market-filter N` | 0 (désactivé) | n'acheter que si l'indice principal est au-dessus de sa moyenne mobile N séances (ex. 200) |
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
-| `--commission-bps` / `--slippage-bps` | 5 / 5 | coûts de transaction |
+| `--commission-bps` / `--slippage-bps` | 0 / 0 | coûts de transaction, en points de base (1 pb = 0,01 %) |
 | `--benchmarks` | SMMD IWM IJH | ETF de comparaison (le premier est l'indice principal) |
 | `--max-tickers N` | tous | limite l'univers aux N plus grosses capitalisations, pour un essai rapide |
 | `--refresh-universe` | | ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |

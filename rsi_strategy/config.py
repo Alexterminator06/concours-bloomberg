@@ -36,9 +36,9 @@ class StrategyConfig:
     # avec des données journalières : par prudence on suppose que le stop est touché en premier.
     stop_first_if_ambiguous: bool = True
 
-    # --- Coûts de transaction ---
-    commission_bps: float = 5.0  # commission par ordre, en points de base du montant
-    slippage_bps: float = 5.0    # glissement sur les ordres au marché / stop (pas sur le take profit limite)
+    # --- Coûts de transaction (aucun dans le concours Bloomberg) ---
+    commission_bps: float = 0.0  # commission par ordre, en points de base du montant
+    slippage_bps: float = 0.0    # glissement sur les ordres au marché / stop (pas sur le take profit limite)
 
     # --- Filtres de liquidité appliqués au moment du signal ---
     min_price: float = 5.0
