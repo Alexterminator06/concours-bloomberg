@@ -21,7 +21,7 @@ TRADE_COLUMNS = ["ticker", "signal_date", "signal_rsi", "entry_date", "entry_pri
                  "exit_date", "exit_price", "exit_reason", "pnl", "return_pct", "holding_days"]
 OPEN_COLUMNS = ["ticker", "signal_date", "entry_date", "entry_price", "shares", "stop_loss",
                 "take_profit", "last_price", "unrealized_pnl"]
-ORDER_COLUMNS = ["ticker", "signal_date", "rsi", "close", "budget"]
+ORDER_COLUMNS = ["ticker", "signal_date", "rsi", "close", "budget", "min_budget"]
 
 
 @dataclass
@@ -124,7 +124,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
             fill = px_open * (1 + slip)
             budget = min(order["budget"], cash)
             shares = int(budget // (fill * (1 + comm)))
-            if shares <= 0:
+            if shares <= 0 or budget < order["min_budget"]:
                 continue
             fee = shares * fill * comm
             cash -= shares * fill + fee
@@ -173,14 +173,15 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                         "equity": equity, "n_positions": len(positions)})
 
         # 4. Scan quotidien des nouvelles opportunités -> ordres pour demain.
-        slots = cfg.max_positions - len(positions)
-        if slots > 0:
-            cand = [j for j in np.flatnonzero(ELIG[i]) if tickers[j] not in positions]
-            cand.sort(key=lambda j: RSI[i, j])
-            budget = equity * cfg.position_size_pct
-            pending = [{"ticker": tickers[j], "signal_date": d, "rsi": RSI[i, j],
-                        "close": C_ffill[i, j], "budget": budget}
-                       for j in cand[:slots]]
+        #    Le lendemain, les ordres sont exécutés dans cet ordre tant qu'il reste du cash.
+        cand = [j for j in np.flatnonzero(ELIG[i]) if tickers[j] not in positions]
+        cand.sort(key=lambda j: RSI[i, j])
+        if cfg.max_positions is not None:
+            cand = cand[:max(cfg.max_positions - len(positions), 0)]
+        pending = [{"ticker": tickers[j], "signal_date": d, "rsi": RSI[i, j],
+                    "close": C_ffill[i, j], "budget": equity * cfg.position_size_pct,
+                    "min_budget": equity * cfg.min_position_pct}
+                   for j in cand]
 
     last = day_indices[-1]
     open_rows = []

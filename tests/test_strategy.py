@@ -32,7 +32,7 @@ def set_bar(panel, day, ticker, o, h, l, c):
 
 def cfg(**kw) -> StrategyConfig:
     base = dict(commission_bps=0.0, slippage_bps=0.0, min_avg_dollar_volume=0.0,
-                avg_volume_window=1, max_positions=5)
+                avg_volume_window=1)
     base.update(kw)
     return StrategyConfig(**base)
 
@@ -88,7 +88,7 @@ def test_entry_next_open_and_take_profit():
     assert t.entry_price == pytest.approx(x)
     assert t.exit_reason == "take_profit"
     assert t.exit_price == pytest.approx(x * 1.05)
-    assert t.shares == int(50_000 // x)
+    assert t.shares == int(1_000_000 * 0.20 // x)
     assert t.pnl == pytest.approx(t.shares * x * 0.05)
 
 
@@ -197,6 +197,28 @@ def test_portfolio_accounting_on_random_walks():
         assert (g["entry_date"].iloc[1:].to_numpy() >= g["exit_date"].iloc[:-1].to_numpy()).all()
     assert (res.trades["entry_date"] > res.trades["signal_date"]).all()
     assert res.trades["signal_date"].min() >= panel["Close"].index[50]
+
+
+def test_default_sizing_caps_each_position_at_20pct_of_portfolio():
+    rng = np.random.default_rng(7)
+    n_days, n_tickers = 300, 60
+    close = 30 * np.exp(np.cumsum(rng.normal(-0.0005, 0.03, (n_days, n_tickers)), axis=0))
+    panel = make_panel({f"T{k}": close[:, k] for k in range(n_tickers)})
+
+    c = cfg(commission_bps=5, slippage_bps=5)
+    assert c.max_positions is None and c.position_size_pct == 0.20
+    res = run_backtest(panel, c, start=panel["Close"].index[30])
+    entries = pd.concat([res.trades, res.open_positions])
+    equity_at_signal = res.equity["equity"].reindex(entries["signal_date"]).to_numpy()
+    entry_value = (entries["shares"] * entries["entry_price"]).to_numpy()
+
+    assert len(entries) > 20
+    # Plafond de 20 % de la valeur totale du portefeuille (frais d'entrée inclus).
+    assert (entry_value * (1 + c.commission_bps / 1e4) <= 0.20 * equity_at_signal + 1e-6).all()
+    # Pas de positions résiduelles : au moins 2 % du portefeuille, à une action près.
+    assert (entry_value >= 0.02 * equity_at_signal - entries["entry_price"].to_numpy()).all()
+    # Pas de levier : le cash ne devient jamais négatif.
+    assert (res.equity["cash"] >= -1e-6).all()
 
 
 def test_performance_stats():

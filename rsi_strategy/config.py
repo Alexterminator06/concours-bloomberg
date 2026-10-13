@@ -7,10 +7,15 @@ from dataclasses import dataclass, field
 class StrategyConfig:
     # --- Capital & dimensionnement ---
     initial_capital: float = 1_000_000.0
-    # Taille d'une nouvelle position, en % de la valeur du portefeuille au moment du signal.
-    position_size_pct: float = 0.05
-    # Nombre maximum de positions ouvertes en même temps (0.05 x 20 = 100 % investi au maximum).
-    max_positions: int = 20
+    # Taille d'une nouvelle position, en % de la valeur totale du portefeuille au moment du signal.
+    # 0.20 = la limite autorisée de 20 % du capital total par position.
+    position_size_pct: float = 0.20
+    # Pas de limite sur le nombre de positions (None) : c'est le cash disponible qui limite,
+    # sans levier. Mettre un entier pour imposer un maximum.
+    max_positions: int | None = None
+    # Quand il reste peu de cash, on n'ouvre pas de position plus petite que ce % du portefeuille
+    # (évite d'investir des reliquats de quelques dollars).
+    min_position_pct: float = 0.02
 
     # --- Signal d'achat ---
     rsi_period: int = 14

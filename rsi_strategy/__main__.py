@@ -34,8 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = common.add_argument_group("stratégie")
     s.add_argument("--capital", type=float, default=defaults.initial_capital)
     s.add_argument("--position-size", type=float, default=defaults.position_size_pct,
-                   help="taille d'une position en fraction du portefeuille (défaut 0.05)")
-    s.add_argument("--max-positions", type=int, default=defaults.max_positions)
+                   help="taille d'une position en fraction du portefeuille (défaut 0.20 = 20 %%)")
+    s.add_argument("--max-positions", type=int, default=defaults.max_positions,
+                   help="nombre maximum de positions simultanées (défaut : pas de limite)")
     s.add_argument("--rsi-period", type=int, default=defaults.rsi_period)
     s.add_argument("--rsi-threshold", type=float, default=defaults.rsi_threshold)
     s.add_argument("--days", type=int, default=defaults.consecutive_days,
@@ -146,7 +147,9 @@ def cmd_scan(args) -> None:
         "quantite_indicative": (budget // close).astype(int),
         "stop_loss_indicatif": close * (1 - cfg.stop_loss_pct),
         "take_profit_indicatif": close * (1 + cfg.take_profit_pct),
-    }).sort_values("rsi").head(cfg.max_positions).round(2)
+    }).sort_values("rsi").round(2)
+    if cfg.max_positions is not None:
+        orders = orders.head(cfg.max_positions)
 
     print(f"\nSignaux au {last.date()} : RSI({cfg.rsi_period}) < {cfg.rsi_threshold:g} "
           f"sur {cfg.consecutive_days} séances -> {len(orders)} action(s)")
@@ -154,9 +157,10 @@ def cmd_scan(args) -> None:
         print("Aucune opportunité aujourd'hui.")
         return
     print(orders.to_string())
-    print(f"\nBudget par position : {budget:,.0f} $. Achat à l'ouverture ; stop loss et take profit "
-          f"à recalculer sur le prix d'exécution réel (-{cfg.stop_loss_pct:.0%} / "
-          f"+{cfg.take_profit_pct:.0%}).".replace(",", " "))
+    print(f"\nBudget par position : {budget:,.0f} $ ({cfg.position_size_pct:.0%} du capital). "
+          f"Acheter dans l'ordre du tableau (RSI le plus bas d'abord) tant qu'il reste du cash. "
+          f"Achat à l'ouverture ; stop loss et take profit à recalculer sur le prix d'exécution "
+          f"réel (-{cfg.stop_loss_pct:.0%} / +{cfg.take_profit_pct:.0%}).".replace(",", " "))
     out = ROOT / "results" / f"signals_{last.date()}.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     orders.to_csv(out)

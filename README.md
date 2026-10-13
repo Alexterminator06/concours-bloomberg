@@ -16,7 +16,7 @@ viennent de Yahoo Finance (via `yfinance`).
 | Take profit | **+5 %** par rapport au prix d'achat. |
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
-| Taille des positions | 5 % du portefeuille par position, 20 positions au maximum. Quand il y a plus de signaux que de places, on achète les RSI les plus bas en premier. Une action déjà détenue n'est pas rachetée. |
+| Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
 | Indice de comparaison | **SMMD** (iShares Russell 2500 : small + mid caps US) comme indice principal. **IWM** (Russell 2000) et **IJH** (S&P MidCap 400) sont affichés à titre indicatif. On compare en achat-conservation, cours ajustés des dividendes. |
 
 Hypothèses du backtest. Elles portent sur des points que l'énoncé ne précisait pas, et toutes se modifient en ligne de commande :
@@ -50,8 +50,8 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | Option | Défaut | Rôle |
 |---|---|---|
 | `--capital` | 1000000 | capital de départ |
-| `--position-size` | 0.05 | taille d'une position (fraction du portefeuille) |
-| `--max-positions` | 20 | nombre maximum de positions simultanées |
+| `--position-size` | 0.20 | taille d'une position (fraction de la valeur totale du portefeuille) |
+| `--max-positions` | aucune | nombre maximum de positions simultanées (par défaut, seul le cash limite) |
 | `--rsi-threshold` / `--days` | 30 / 2 | seuil du RSI et nombre de séances consécutives |
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
 | `--commission-bps` / `--slippage-bps` | 5 / 5 | coûts de transaction |
