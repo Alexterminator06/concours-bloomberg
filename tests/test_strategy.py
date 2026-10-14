@@ -373,6 +373,9 @@ def test_accounting_with_largest_stocks_on_random_walks():
     unrealized = res.open_positions["unrealized_pnl"].sum() if not res.open_positions.empty else 0.0
     assert eq["equity"].iloc[-1] - c.initial_capital == pytest.approx(
         res.trades["pnl"].sum() + unrealized + res.core_pnl)
+    summary = res.core_summary
+    assert summary["pnl_usd"].sum() == pytest.approx(res.core_pnl, abs=len(summary))  # arrondis
+    assert set(summary["ticker"]) <= set(shares.index) and (summary["mois_retenue"] > 0).all()
 
 
 def test_reserved_share_of_largest_stocks_limits_rsi_buys():

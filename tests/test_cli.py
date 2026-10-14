@@ -188,6 +188,10 @@ def test_backtest_command_with_largest_stocks(tmp_path, monkeypatch, capsys):
     assert re.search(r"P&L grandes valeurs \(\$\)\s+-?[\d ]+\n", out)
     trades = pd.read_csv(tmp_path / "trades.csv")
     assert not trades["ticker"].str.startswith("BIG").any()
+    assert "Grandes valeurs : P&L par action" in out
+    core = pd.read_csv(tmp_path / "grandes_valeurs.csv")
+    assert set(core["ticker"]) <= {"BIG0", "BIG1", "BIG2"} and list(core.columns) == [
+        "ticker", "mois_retenue", "premier_mois", "dernier_mois", "pnl_usd"]
 
 
 

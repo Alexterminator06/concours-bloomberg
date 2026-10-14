@@ -52,6 +52,7 @@ class BacktestResult:
     next_orders: pd.DataFrame     # signaux du dernier jour, à exécuter à l'ouverture suivante
     core_pnl: float = 0.0         # gain des grandes valeurs ($), réalisé et latent
     core_holdings: dict | None = None  # grandes valeurs détenues à la fin : ticker -> titres
+    core_summary: pd.DataFrame | None = None  # par grande valeur : mois retenue, P&L ($)
 
 
 def compute_signals(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
@@ -151,6 +152,8 @@ class CoreSleeve:
         self.members: list[str] = []
         self.holdings: dict[str, int] = {}
         self.cash_flow = 0.0  # ventes - achats : P&L = cash_flow + valeur détenue
+        self.flows: dict[str, float] = {}  # même chose, action par action
+        self.history: list[tuple[pd.Timestamp, list[str]]] = []  # classement de chaque mois
 
     def _price(self, ticker: str, prices: np.ndarray) -> float:
         return prices[self.col[ticker]]
@@ -184,12 +187,14 @@ class CoreSleeve:
         if self.holdings[ticker] == 0:
             del self.holdings[ticker]
         self.cash_flow += proceeds
+        self.flows[ticker] = self.flows.get(ticker, 0.0) + proceeds
         return proceeds
 
     def _buy(self, ticker: str, shares: int, price: float) -> float:
         cost = shares * price * (1 + self.slip) * (1 + self.comm)
         self.holdings[ticker] = self.holdings.get(ticker, 0) + shares
         self.cash_flow -= cost
+        self.flows[ticker] = self.flows.get(ticker, 0.0) - cost
         return cost
 
     def sell_non_members(self, prices: np.ndarray) -> float:
@@ -199,6 +204,24 @@ class CoreSleeve:
             if np.isfinite(self._price(t, prices)):
                 cash += self._sell(t, self.holdings[t], self._price(t, prices))
         return cash
+
+    def summary(self, prices: np.ndarray) -> pd.DataFrame:
+        """Par grande valeur détenue : nombre de mois où elle était retenue, premier et dernier
+        de ces mois, P&L réalisé et latent ($), du plus gros gain à la plus grosse perte."""
+        months: dict[str, list[pd.Timestamp]] = {}
+        for when, members in self.history:
+            for t in members:
+                months.setdefault(t, []).append(when)
+        rows = []
+        for t, flow in self.flows.items():
+            held = self.holdings.get(t, 0) * self._price(t, prices)
+            dates = months.get(t, [])
+            rows.append({"ticker": t, "mois_retenue": len(dates),
+                         "premier_mois": dates[0].strftime("%Y-%m") if dates else "",
+                         "dernier_mois": dates[-1].strftime("%Y-%m") if dates else "",
+                         "pnl_usd": round(flow + (held if np.isfinite(held) else 0.0))})
+        return pd.DataFrame(rows, columns=["ticker", "mois_retenue", "premier_mois", "dernier_mois",
+                                           "pnl_usd"]).sort_values("pnl_usd", ascending=False)
 
     def raise_cash(self, amount: float, prices: np.ndarray) -> float:
         """Vend des grandes valeurs, des plus grosses lignes aux plus petites, pour obtenir au
@@ -315,6 +338,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                     core.select(C_ffill[prev])
             else:
                 core.select(C_ffill[prev])
+            core.history.append((d, list(core.members)))
             cash += core.sell_non_members(open_px)
 
         # 1. Achats RSI à l'ouverture (ordres de la veille, du RSI le plus bas au plus haut),
@@ -428,4 +452,5 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
         next_orders=pd.DataFrame(pending, columns=ORDER_COLUMNS),
         core_pnl=core.cash_flow + core.value(C_ffill[last]) if core is not None else 0.0,
         core_holdings=dict(core.holdings) if core is not None else None,
+        core_summary=core.summary(C_ffill[last]) if core is not None else None,
     )

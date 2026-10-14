@@ -333,6 +333,13 @@ def cmd_backtest(args) -> None:
     if rel:
         print_section("Stratégie relativement à chaque indice", format_table(rel))
     print_section("Statistiques des trades", tstats)
+    core_summary = result.core_summary
+    if core_summary is not None and not core_summary.empty:
+        table = core_summary.set_index("ticker")
+        if len(table) > 10:  # les 5 plus gros gains et les 5 plus grosses pertes
+            table = pd.concat([table.head(5), table.tail(5)])
+        print_section("Grandes valeurs : P&L par action (liste complète dans grandes_valeurs.csv)",
+                      table)
     if not result.open_positions.empty:
         print_section("Positions ouvertes en fin de période",
                       result.open_positions.set_index("ticker").round(
@@ -341,7 +348,8 @@ def cmd_backtest(args) -> None:
 
     save_csv(args.out, trades=result.trades, open_positions=result.open_positions,
              equity_curve=curves, next_orders=result.next_orders,
-             summary=format_table({**perf, **{f"vs {k}": v for k, v in rel.items()}}).reset_index())
+             summary=format_table({**perf, **{f"vs {k}": v for k, v in rel.items()}}).reset_index(),
+             **({"grandes_valeurs": core_summary} if core_summary is not None else {}))
     plot_performance(curves, args.out / "performance.png",
                      f"Stratégie {signal_label(cfg)} – small & mid caps vs indices")
     print(f"\nRésultats enregistrés dans {args.out}/")

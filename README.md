@@ -144,7 +144,8 @@ Le backtest affiche dans la console et écrit dans `results/` :
 - `trades.csv` : chaque trade (signal, entrée, sortie, motif, P&L) ;
 - `equity_curve.csv` : valeur quotidienne de la stratégie et des indices ;
 - `open_positions.csv` : positions encore ouvertes en fin de période, avec leurs niveaux de stop et d'objectif ;
-- `next_orders.csv` : ordres à passer à l'ouverture suivante.
+- `next_orders.csv` : ordres à passer à l'ouverture suivante ;
+- `grandes_valeurs.csv` : chaque grande valeur détenue, avec le nombre de mois où elle a été retenue, le premier et le dernier de ces mois et son P&L réalisé et latent.
 
 ## Diagnostiquer la performance
 
