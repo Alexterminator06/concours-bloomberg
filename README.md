@@ -5,7 +5,7 @@ parmi les quelque 10 000 actions de l'indice WLS (l'indice du concours Bloomberg
 celles en tendance haussière qui viennent de subir un repli brutal (RSI(2) sous 10), avec un stop
 loss et un take profit à 5 %. Au moins la moitié du portefeuille, plus le cash que les achats RSI
 n'utilisent pas, est placée dans 10 grandes valeurs du WLS : chaque mois, celles qui ont le plus
-monté sur 12 mois parmi les 50 plus grandes (momentum). Les cours viennent de Yahoo Finance (via
+monté sur 12 mois parmi les 50 plus grandes (momentum), 3 au plus par secteur. Les cours viennent de Yahoo Finance (via
 `yfinance`) et sont convertis en dollars.
 
 ## Règles
@@ -17,7 +17,7 @@ monté sur 12 mois parmi les 50 plus grandes (momentum). Les cours viennent de Y
 | Fréquence | **Un scan par jour**, après la clôture. L'achat se fait à l'ouverture de la séance suivante, ce qui évite tout biais d'anticipation. |
 | Stop loss | **-5 %** par rapport au prix d'achat. |
 | Take profit | **+5 %** par rapport au prix d'achat. Un objectif relevé à +10 % quand le marché est en tendance haussière existe en option (`--take-profit-bull 0.10`), mais il fait moins bien dans les backtests (voir plus bas). |
-| Grandes valeurs | **Au moins 50 % du portefeuille**, plus le cash que les achats RSI n'utilisent pas, dans **10 grandes valeurs du WLS choisies chaque mois par momentum** : parmi les 50 plus grandes capitalisations (une catégorie d'actions par société), les 10 qui ont le plus monté sur 12 mois, sans compter le dernier mois. Elles sont détenues à parts à peu près égales, sans stop ni take profit. `--core-rel-momentum 0` revient aux 10 plus grandes capitalisations. Les achats RSI n'utilisent donc que l'autre moitié ; au-delà des 50 %, les grandes valeurs sont vendues en priorité, en partant des plus grosses lignes, pour les financer. `--core-min 0` revient à placer seulement le cash restant (0,2 à 1,4 % du portefeuille en moyenne). |
+| Grandes valeurs | **Au moins 50 % du portefeuille**, plus le cash que les achats RSI n'utilisent pas, dans **10 grandes valeurs du WLS choisies chaque mois par momentum** : parmi les 50 plus grandes capitalisations (une catégorie d'actions par société), les 10 qui ont le plus monté sur 12 mois, sans compter le dernier mois, **3 au plus par secteur** (une fois 3 valeurs d'un secteur retenues, on passe aux suivantes du classement ; secteurs Yahoo Finance, gardés dans `data/secteurs.csv`). Elles sont détenues à parts à peu près égales, sans stop ni take profit. `--core-rel-momentum 0` revient aux 10 plus grandes capitalisations, `--core-sector-max 0` supprime le plafond. Les achats RSI n'utilisent donc que l'autre moitié ; au-delà des 50 %, les grandes valeurs sont vendues en priorité, en partant des plus grosses lignes, pour les financer. `--core-min 0` revient à placer seulement le cash restant (0,2 à 1,4 % du portefeuille en moyenne). |
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
 | Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
@@ -85,7 +85,8 @@ python -m rsi_strategy scan
    3. les achats de grandes valeurs, pour qu'elles pèsent au moins 50 % du portefeuille, avec le
       cash restant.
 
-   Le scan affiche aussi la sélection du mois, avec la hausse sur 12 mois de chaque grande valeur.
+   Le scan affiche aussi la sélection du mois, avec la hausse sur 12 mois et le secteur de chaque
+   grande valeur.
    Elle ne change qu'au début de chaque mois ; le premier scan avec le momentum remplace d'un coup
    les grandes valeurs détenues qui n'en font pas partie.
 
@@ -121,7 +122,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--core-abs-momentum MOIS` | 0 (désactivé) | momentum absolu : au début de chaque mois, si VT a baissé sur ce nombre de mois (ex. 12), les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois suivant |
 | `--core-rel-momentum MOIS` | 12 | momentum relatif : chaque mois, garder les `--core-size` grandes valeurs qui ont le plus monté sur ce nombre de mois, hors dernier mois, parmi les `--core-momentum-pool` plus grandes (0 = les plus grandes capitalisations) |
 | `--core-momentum-pool N` | 50 | nombre de plus grandes capitalisations parmi lesquelles le momentum relatif choisit |
-| `--core-sector-max N` | 0 (désactivé) | backtest : au plus N grandes valeurs du même secteur, en descendant le classement du mois ; les secteurs viennent de Yahoo Finance et sont gardés dans `data/secteurs.csv` (modifiable à la main) |
+| `--core-sector-max N` | 3 | au plus N grandes valeurs du même secteur, en descendant le classement du mois (0 = pas de plafond) ; les secteurs viennent de Yahoo Finance et sont gardés dans `data/secteurs.csv` (modifiable à la main) |
 | `--core-inverse-vol` | | backtest : pondérer chaque grande valeur par l'inverse de sa volatilité sur 63 séances, avec un rééquilibrage chaque mois, au lieu de parts à peu près égales |
 | `--core-candidates N` | 2000 | backtest : chercher chaque mois les plus grandes capitalisations de l'époque parmi les N plus grandes actuelles du WLS, pour retrouver celles qui ne sont plus parmi les plus grandes aujourd'hui (biais du survivant ; 0 = les 100 plus grandes) |
 | `--universe` | monde | `monde` : tous les membres du WLS ; `us` : small & mid caps américaines du WLS |
@@ -274,7 +275,7 @@ variante seulement si elle fait mieux que les 10 plus grandes sur les deux péri
 | Momentum relatif parmi les 50 plus grandes (100 candidates) | +63 pts (-27 %) | +115 pts (-19 %) |
 | Momentum relatif parmi les 20 plus grandes (100 candidates) | +32 pts (-27 %) | +72 pts (-20 %) |
 | 10 plus grandes (2000 candidates) | +40 pts (-30 %) | +69 pts (-20 %) |
-| **Momentum relatif parmi les 50 plus grandes (2000 candidates, défaut)** | **+60 pts** (-27 %) | **+98 pts** (-19 %) |
+| **Momentum relatif parmi les 50 plus grandes (2000 candidates)** | **+60 pts** (-27 %) | **+98 pts** (-19 %) |
 
 - **Momentum absolu, rejeté** : VT n'a jamais baissé sur 12 mois entre 2023 et 2026, et sur
   2019-2023 le signal arrive trop tard, après les baisses, et fait rater des reprises (début 2019,
@@ -288,17 +289,36 @@ variante seulement si elle fait mieux que les 10 plus grandes sur les deux péri
   Eli Lilly, les plus gros gains de 2019-2023, sont retenues aux mêmes dates avec 2000 candidates :
   elles comptaient bien parmi les 50 plus grandes de l'époque.
 - **Limites** : l'avance dépend de la largeur du choix (parmi les 20 plus grandes seulement, le
-  momentum fait moins bien sur 2019-2023), la volatilité monte de 15 à 19 % sur 2023-2026, et les
-  gains viennent de quelques valeurs : Tesla, Nvidia et Eli Lilly sur 2019-2023, Micron, AMD, SK
-  Hynix et Samsung sur 2023-2026. En octobre 2026, au moins 5 des 10 grandes valeurs retenues sont
-  des semi-conducteurs (Micron, AMD, SK Hynix, Samsung, Intel) : un retournement du secteur
-  toucherait une grande partie de cette moitié du portefeuille.
+  momentum fait moins bien sur 2019-2023) et du nombre de valeurs détenues (avec 20 au lieu de 10,
+  elle disparaît), et les gains viennent de quelques valeurs : Tesla, Nvidia et Eli Lilly sur
+  2019-2023, Micron, AMD, SK Hynix et Samsung sur 2023-2026. Sur 6 mois au lieu de 12, le momentum
+  bat aussi les 10 plus grandes sur les deux périodes : l'effet ne tient pas à ce seul réglage.
+
+Sans plafond, le momentum concentrait les grandes valeurs sur un secteur : à l'été 2026, presque
+toutes étaient des valeurs de mémoire et de semi-conducteurs (Micron, SK Hynix, SanDisk, Lam
+Research...). Les 8 plus fortes variations d'une séance de la part grandes valeurs, sur 3 ans, ont
+toutes eu lieu en juin et juillet 2026, à 3 ou 4 % du portefeuille chacune, alors que VT bougeait
+à peine. Deux corrections ont été testées, avec la même règle fixée avant les tests : moins de
+volatilité et un Sharpe au moins égal sur les deux périodes, en battant toujours les 10 plus
+grandes.
+
+| Face à VT (volatilité, Sharpe) | 2019-2023 | 2023-2026 |
+|---|---|---|
+| Momentum sans plafond | +60 pts (17,6 %, 0,98) | +98 pts (19,2 %, 1,79) |
+| **3 au plus par secteur (défaut)** | **+64 pts** (16,9 %, 1,03) | **+97 pts** (16,6 %, 2,04) |
+| Pondération par l'inverse de la volatilité (`--core-inverse-vol`) | +41 pts (16,1 %, 0,94) | +82 pts (17,6 %, 1,83) |
+
+Le plafond par secteur réduit la volatilité pour le même rendement : les pires séances de l'été
+2026 passent de -4,2 % à -2,8 % du portefeuille. La pondération par la volatilité coûte trop de
+rendement sur 2019-2023 (Sharpe plus faible) : elle reste une option du backtest.
 
 ```bash
-python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --out results/monde_rel_c2000
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_monde_rel_c2000
-python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --core-rel-momentum 0 --out results/monde_c2000
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-rel-momentum 0 --out results/oos_monde_c2000
+python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --out results/monde_secteur3
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_monde_secteur3
+python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --core-sector-max 0 --out results/monde_rel_c2000
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-sector-max 0 --out results/oos_monde_rel_c2000
+python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --core-rel-momentum 0 --core-sector-max 0 --out results/monde_c2000
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-rel-momentum 0 --core-sector-max 0 --out results/oos_monde_c2000
 ```
 
 ## Limites

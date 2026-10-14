@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from .backtest import (compute_signals, largest_each_month, lookback_rows, market_is_bullish,
-                       market_is_falling, run_backtest)
+                       market_is_falling, pick_by_sector, run_backtest)
 from .config import StrategyConfig
 from .data import download_ohlcv, fetch_sectors, fx_tickers, load_ohlcv, load_sectors, to_usd
 from .metrics import (aligned_prices, benchmark_equity, performance_stats, relative_stats,
@@ -87,8 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
                    metavar="N", help="candidates du momentum relatif : les N plus grandes "
                                      f"capitalisations (défaut {defaults.core_momentum_pool})")
     s.add_argument("--core-sector-max", type=int, default=defaults.core_sector_max, metavar="N",
-                   help="backtest : au plus N grandes valeurs du même secteur (secteurs Yahoo "
-                        "Finance, gardés dans data/secteurs.csv ; 0 = pas de plafond)")
+                   help="au plus N grandes valeurs du même secteur (secteurs Yahoo Finance, gardés "
+                        f"dans data/secteurs.csv ; défaut {defaults.core_sector_max}, 0 = pas de "
+                        "plafond)")
     s.add_argument("--core-inverse-vol", action="store_true",
                    help="backtest : pondérer les grandes valeurs par l'inverse de leur volatilité "
                         f"sur {defaults.core_vol_days} séances, rééquilibrées chaque mois (par "
@@ -186,15 +187,27 @@ def _core_pool(wls: pd.DataFrame, cfg: StrategyConfig, size: int | None = None) 
     return largest(wls, size or cfg.core_pool_size, above=cfg.max_market_cap)
 
 
+def _alternatives(tickers: list[str], wls: pd.DataFrame | None) -> dict[str, list[str]] | None:
+    """Autres écritures Yahoo des tickers du WLS (NOVO-B.CO pour NOVOB.CO...)."""
+    if wls is None:
+        return None
+    info = wls.set_index("symbol")
+    return {t: alt for t in tickers if t in info.index
+            for alt in [alternative_symbols(t, info.at[t, "exchange"])] if alt}
+
+
+def _load_sectors(symbols: list[str], wls: pd.DataFrame | None) -> dict[str, str]:
+    """Secteurs Yahoo des grandes valeurs, gardés dans data/secteurs.csv."""
+    alternatives = _alternatives(symbols, wls)
+    return load_sectors(sorted(symbols), ROOT / "data" / "secteurs.csv",
+                        fetch=lambda missing: fetch_sectors(missing, alternatives))
+
+
 def _load_prices(tickers: list[str], wls: pd.DataFrame | None, start: str, end: str,
                  cache: Path | None, refresh: bool = False) -> dict[str, pd.DataFrame]:
     """Cours des tickers, convertis en dollars. Avec `cache` : cache disque (backtest) ;
     sans : téléchargement direct (scan quotidien)."""
-    alternatives = None
-    if wls is not None:
-        info = wls.set_index("symbol")
-        alternatives = {t: alt for t in tickers if t in info.index
-                        for alt in [alternative_symbols(t, info.at[t, "exchange"])] if alt}
+    alternatives = _alternatives(tickers, wls)
 
     def load(symbols, alts=None):
         if cache is None:
@@ -255,9 +268,11 @@ def _warmup_days(cfg: StrategyConfig) -> int:
 
 def _monthly_core_members(cfg: StrategyConfig, close: pd.DataFrame,
                           market_close: pd.Series | None, largest_members: list[str],
-                          pool: list[str]) -> list[str]:
+                          pool: list[str], sectors: dict[str, str] | None = None) -> list[str]:
     """Grandes valeurs à détenir ce mois-ci, comme dans le backtest : décision prise sur la
-    dernière clôture du mois qui précède la prochaine séance, donc identique tout le mois."""
+    dernière clôture du mois qui précède la prochaine séance, donc identique tout le mois.
+    `largest_members` : plus grandes capitalisations, de la plus grosse à la plus petite."""
+    sectors = sectors or {}
     dates = close.index
     next_session = dates[-1] + pd.offsets.BDay(1)
     row = int(dates.searchsorted(next_session.replace(day=1), side="left")) - 1
@@ -281,12 +296,16 @@ def _monthly_core_members(cfg: StrategyConfig, close: pd.DataFrame,
         candidates = close[close.columns.intersection(pool)].ffill()
         if first >= 0 and not candidates.empty:
             perf = (candidates.iloc[last] / candidates.iloc[first] - 1).dropna()
-            members = list(perf.sort_values(ascending=False).index[:cfg.core_size])
+            members = pick_by_sector(list(perf.sort_values(ascending=False).index),
+                                     cfg.core_size, sectors, cfg.core_sector_max)
+            cap = f", {cfg.core_sector_max} au plus par secteur" if cfg.core_sector_max else ""
             print(f"Grandes valeurs du mois (momentum {months} mois hors dernier mois, parmi les "
-                  f"{len(pool)} plus grandes, au {anchor}) : "
-                  + ", ".join(f"{t} {perf[t]:+.0%}" for t in members))
+                  f"{len(pool)} plus grandes{cap}, au {anchor}) : "
+                  + ", ".join(f"{t} {perf[t]:+.0%}"
+                              + (f" ({sectors[t]})" if cfg.core_sector_max and sectors.get(t)
+                                 else "") for t in members))
             return members
-    return largest_members
+    return pick_by_sector(largest_members, cfg.core_size, sectors, cfg.core_sector_max)
 
 
 def take_profit_label(cfg: StrategyConfig) -> str:
@@ -330,8 +349,7 @@ def cmd_backtest(args) -> None:
         ranked = (cfg.core_momentum_pool if cfg.core_rel_momentum_months else 4 * cfg.core_size)
         needed = largest_each_month(panel["Close"], core_shares, ranked, args.start, args.end,
                                     core_caps_now)
-        core_sectors = load_sectors(sorted(needed), ROOT / "data" / "secteurs.csv",
-                                    fetch=fetch_sectors)
+        core_sectors = _load_sectors(list(needed), wls)
     result = run_backtest(panel, cfg, start=args.start, end=args.end,
                           market_close=bench_close.get(market), core_shares=core_shares,
                           price_filter=_us_symbols(wls), core_no_rsi=core_no_rsi,
@@ -417,9 +435,8 @@ def _money(value: float, signed: bool = False) -> str:
 
 def cmd_scan(args) -> None:
     cfg = config_from_args(args)
-    if cfg.core_sector_max or cfg.core_inverse_vol:
-        raise SystemExit("--core-sector-max et --core-inverse-vol ne servent pour l'instant "
-                         "qu'au backtest.")
+    if cfg.core_inverse_vol:
+        raise SystemExit("--core-inverse-vol ne sert pour l'instant qu'au backtest.")
     tickers, wls = _universe(args, cfg)
     portfolio = None
     if args.portfolio_file.exists():
@@ -436,12 +453,16 @@ def cmd_scan(args) -> None:
     held = [] if portfolio is None else list(portfolio.positions.index)
     bbg = {} if wls is None else dict(zip(wls["symbol"],
                                           wls["bloomberg"].str.replace(" Equity", "", regex=False)))
-    core_members, core_universe, momentum_pool = [], [], []
+    core_members, core_universe, momentum_pool, sectors = [], [], [], {}
     if cfg.core_size and wls is not None:
-        core_members = list(_core_pool(wls, cfg, cfg.core_size)["symbol"])
+        # Avec un plafond par secteur, on descend plus loin dans le classement des plus grandes.
+        ranked = 4 * cfg.core_size if cfg.core_sector_max else cfg.core_size
+        core_members = list(_core_pool(wls, cfg, ranked)["symbol"])
         core_universe = list(_core_pool(wls, cfg)["symbol"])
         if cfg.core_rel_momentum_months:
             momentum_pool = list(_core_pool(wls, cfg, cfg.core_momentum_pool)["symbol"])
+        if cfg.core_sector_max:
+            sectors = _load_sectors(momentum_pool or core_members, wls)
 
     start = (date.today() - timedelta(days=_warmup_days(cfg))).isoformat()
     end = (date.today() + timedelta(days=1)).isoformat()
@@ -452,7 +473,7 @@ def cmd_scan(args) -> None:
         market_close = download_ohlcv([cfg.benchmarks[0]], start, end)["Close"].iloc[:, 0]
     if core_members:
         core_members = _monthly_core_members(cfg, panel["Close"], market_close, core_members,
-                                             momentum_pool)
+                                             momentum_pool, sectors)
 
     rsi_values, eligible = compute_signals(panel, cfg, market_close, _us_symbols(wls))
     last = panel["Close"].index[-1]

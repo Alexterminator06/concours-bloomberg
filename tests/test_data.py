@@ -166,4 +166,24 @@ def test_sectors_are_fetched_once_and_cached(tmp_path):
     assert load_sectors(["A", "LIMIT", "X"], path, fetch=fetch) == {"A": "Tech", "X": ""}
     assert load_sectors(["A", "C", "LIMIT", "X"], path, fetch=fetch) == {
         "A": "Tech", "C": "Tech", "X": ""}
-    assert calls == [["A", "LIMIT", "X"], ["C", "LIMIT"]]  # LIMIT redemandée, pas A ni X
+    assert calls == [["A", "LIMIT", "X"], ["C", "LIMIT", "X"]]  # LIMIT et X redemandées, pas A
+
+
+def test_sectors_try_the_other_yahoo_spellings(monkeypatch):
+    import yfinance as yf
+    from rsi_strategy.data import fetch_sectors
+
+    known = {"NOVO-B.CO": "Healthcare", "AAPL": "Technology"}
+
+    class FakeTicker:  # Yahoo connaît Novo Nordisk sous NOVO-B.CO, pas sous NOVOB.CO
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def get_info(self):
+            if self.symbol not in known:
+                raise ValueError("HTTP Error 404: Quote not found")
+            return {"sector": known[self.symbol]}
+
+    monkeypatch.setattr(yf, "Ticker", FakeTicker)
+    assert fetch_sectors(["NOVOB.CO", "AAPL", "NONE"], {"NOVOB.CO": ["NOVO-B.CO"]}) == {
+        "NOVOB.CO": "Healthcare", "AAPL": "Technology", "NONE": ""}

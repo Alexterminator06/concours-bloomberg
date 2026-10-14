@@ -143,6 +143,24 @@ def market_is_falling(market: np.ndarray, dates: pd.DatetimeIndex, row: int, mon
 MAX_PAST_CAP_RATIO = 50
 
 
+def pick_by_sector(ranked: list[str], size: int, sectors: dict[str, str],
+                   sector_max: int) -> list[str]:
+    """Les `size` premières de `ranked`, au plus `sector_max` par secteur (0 = pas de plafond ;
+    secteur inconnu : pas de plafond pour cette action)."""
+    if not sector_max:
+        return ranked[:size]
+    counts: dict[str, int] = {}
+    members = []
+    for t in ranked:
+        sector = sectors.get(t) or t
+        if counts.get(sector, 0) < sector_max:
+            members.append(t)
+            counts[sector] = counts.get(sector, 0) + 1
+        if len(members) == size:
+            break
+    return members
+
+
 class CoreSleeve:
     """Grandes valeurs détenues avec le cash que les achats RSI n'utilisent pas.
 
@@ -195,20 +213,7 @@ class CoreSleeve:
         self.members = self._pick(ranked)
 
     def _pick(self, ranked: list[str]) -> list[str]:
-        """Les `size` premières du classement, au plus `sector_max` par secteur (secteur inconnu :
-        pas de plafond)."""
-        if not self.sector_max:
-            return ranked[:self.size]
-        counts: dict[str, int] = {}
-        members = []
-        for t in ranked:
-            sector = self.sectors.get(t) or t
-            if counts.get(sector, 0) < self.sector_max:
-                members.append(t)
-                counts[sector] = counts.get(sector, 0) + 1
-            if len(members) == self.size:
-                break
-        return members
+        return pick_by_sector(ranked, self.size, self.sectors, self.sector_max)
 
     def set_inverse_vol_targets(self, window: np.ndarray) -> None:
         """Poids visés proportionnels à l'inverse de la volatilité des rendements journaliers,

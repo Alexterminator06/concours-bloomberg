@@ -74,8 +74,10 @@ class StrategyConfig:
     core_rel_momentum_months: int = 12
     core_momentum_pool: int = 50
     # Plafond par secteur (0 = désactivé) : en descendant le classement du mois, au plus N grandes
-    # valeurs du même secteur (secteurs Yahoo Finance). Backtest seulement pour l'instant.
-    core_sector_max: int = 0
+    # valeurs du même secteur (secteurs Yahoo Finance, gardés dans data/secteurs.csv). 3 : moins
+    # de volatilité sur 2019-2023 et sur 2023-2026 (16,9 et 16,6 % contre 17,6 et 19,2 %), pour le
+    # même rendement (+64 et +97 points face à VT, contre +60 et +98).
+    core_sector_max: int = 3
     # Pondération (False = parts à peu près égales) : chaque grande valeur vise un poids
     # proportionnel à l'inverse de sa volatilité sur `core_vol_days` séances, rééquilibré chaque
     # mois. Backtest seulement pour l'instant.

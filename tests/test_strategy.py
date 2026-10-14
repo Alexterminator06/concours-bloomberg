@@ -515,6 +515,7 @@ def test_default_reserves_half_of_the_portfolio_for_largest_stocks():
     # backtest sur 2000 candidates.
     assert (defaults.core_rel_momentum_months, defaults.core_momentum_pool) == (12, 50)
     assert (defaults.core_abs_momentum_months, defaults.core_candidates) == (0, 2000)
+    assert (defaults.core_sector_max, defaults.core_inverse_vol) == (3, False)
 
 
 def test_benchmark_uses_last_known_price_on_its_holidays():

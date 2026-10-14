@@ -9,6 +9,14 @@ import pytest
 import rsi_strategy.__main__ as cli
 
 
+@pytest.fixture(autouse=True)
+def no_sector_download(monkeypatch):
+    """Pas d'appel à Yahoo pour les secteurs (plafond par secteur par défaut) : secteurs inconnus,
+    donc pas de plafond, sauf dans les tests qui en fournissent."""
+    monkeypatch.setattr(cli, "fetch_sectors",
+                        lambda symbols, alternatives=None: {s: "" for s in symbols})
+
+
 def fake_panel(tickers, start, end):
     idx = pd.bdate_range(start, end, inclusive="left")
     rng = np.random.default_rng(len(tickers))
@@ -286,8 +294,8 @@ def test_backtest_with_sector_cap_and_inverse_volatility(tmp_path, monkeypatch, 
     monkeypatch.setattr(cli, "ROOT", tmp_path)
     monkeypatch.setattr(cli, "load_ohlcv",
                         lambda tickers, start, end, cache, refresh=False, **kw: fake_panel(tickers, start, end))
-    monkeypatch.setattr(cli, "fetch_sectors",
-                        lambda symbols: {s: "Energy" if s == "BIG2" else "Tech" for s in symbols})
+    monkeypatch.setattr(cli, "fetch_sectors", lambda symbols, alternatives=None: {
+        s: "Energy" if s == "BIG2" else "Tech" for s in symbols})
     cli.main(["import-wls", str(source)])
     cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
               "--core-size", "2", "--core-sector-max", "1", "--core-inverse-vol"])
@@ -300,8 +308,21 @@ def test_backtest_with_sector_cap_and_inverse_volatility(tmp_path, monkeypatch, 
     assert "BIG2" in daily.columns
 
 
-def test_scan_refuses_backtest_only_large_stock_options(tmp_path, monkeypatch):
+def test_scan_refuses_backtest_only_inverse_volatility(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ROOT", tmp_path)
-    for option in (["--core-sector-max", "3"], ["--core-inverse-vol"]):
-        with pytest.raises(SystemExit, match="qu'au backtest"):
-            cli.main(["scan", *option])
+    with pytest.raises(SystemExit, match="qu'au backtest"):
+        cli.main(["scan", "--core-inverse-vol"])
+
+
+def test_scan_caps_largest_stocks_per_sector(tmp_path, monkeypatch, capsys):
+    # Sans plafond, le momentum retient Toyota et BIG1 (voir le test du scan par défaut).
+    monkeypatch.setattr(cli, "fetch_sectors", lambda symbols, alternatives=None: {
+        s: "Utilities" if s == "BIG2" else "Technology" for s in symbols})
+    run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD,1000,400\n",
+             wls_text=WLS_EXPORT, extra_args=["--core-size", "2", "--core-sector-max", "1"])
+    out = capsys.readouterr().out
+    assert "parmi les 3 plus grandes, 1 au plus par secteur" in out and "(Utilities)" in out
+    orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
+    bought = set(orders.loc[orders["type"] != "RSI", "ticker"])
+    assert len(bought) == 2 and "BIG2" in bought  # une seule des deux valeurs Technology
+    assert (tmp_path / "data" / "secteurs.csv").exists()

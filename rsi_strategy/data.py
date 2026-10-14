@@ -224,40 +224,58 @@ def _write_cache(panel: dict[str, pd.DataFrame], path: Path) -> None:
         old.unlink(missing_ok=True)
 
 
-def fetch_sectors(symbols: list[str]) -> dict[str, str]:
-    """Secteur Yahoo Finance de chaque action (« Technology », « Healthcare »...), « » si Yahoo
-    n'en donne pas. Les actions que Yahoo refuse de servir (limite de requêtes) sont absentes."""
+def _sector(symbol: str) -> str | None:
+    """Secteur Yahoo d'un symbole, « » s'il n'en a pas ; None si Yahoo limite les requêtes
+    malgré les nouvelles tentatives."""
     import yfinance as yf
     from yfinance.exceptions import YFRateLimitError
 
+    for attempt in range(len(RETRY_WAITS) + 1):
+        try:
+            return str(yf.Ticker(symbol).get_info().get("sector") or "")
+        except YFRateLimitError:
+            if attempt == len(RETRY_WAITS):
+                return None
+            print(f"    Yahoo limite les requêtes : pause de {RETRY_WAITS[attempt]} s...")
+            time.sleep(RETRY_WAITS[attempt])
+        except Exception:  # symbole inconnu de Yahoo, réponse incomplète...
+            return ""
+    return None
+
+
+def fetch_sectors(symbols: list[str],
+                  alternatives: dict[str, list[str]] | None = None) -> dict[str, str]:
+    """Secteur Yahoo Finance de chaque action (« Technology », « Healthcare »...), en essayant
+    ses autres écritures (`alternatives`) si besoin ; « » si Yahoo n'en donne pas. Les actions
+    que Yahoo refuse de servir (limite de requêtes) sont absentes."""
     print(f"Secteurs de {len(symbols)} action(s) (Yahoo Finance) ...")
+    yf_logger = logging.getLogger("yfinance")
+    saved = yf_logger.level
+    yf_logger.setLevel(logging.CRITICAL)  # pas une ligne d'erreur par symbole inconnu
     sectors: dict[str, str] = {}
-    for k, symbol in enumerate(symbols):
-        for attempt in range(len(RETRY_WAITS) + 1):
-            try:
-                sectors[symbol] = str(yf.Ticker(symbol).get_info().get("sector") or "")
-                break
-            except YFRateLimitError:
-                if attempt == len(RETRY_WAITS):
+    try:
+        for k, symbol in enumerate(symbols):
+            for candidate in [symbol, *(alternatives or {}).get(symbol, [])]:
+                sector = _sector(candidate)
+                if sector is not None:
+                    sectors[symbol] = sector
+                if sector:
                     break
-                print(f"    Yahoo limite les requêtes : pause de {RETRY_WAITS[attempt]} s...")
-                time.sleep(RETRY_WAITS[attempt])
-            except Exception:  # action inconnue de Yahoo, réponse incomplète...
-                sectors[symbol] = ""
-                break
-        if (k + 1) % 50 == 0:
-            print(f"  {k + 1} / {len(symbols)}")
+            if (k + 1) % 50 == 0:
+                print(f"  {k + 1} / {len(symbols)}")
+    finally:
+        yf_logger.setLevel(saved)
     return sectors
 
 
 def load_sectors(symbols: list[str], path: Path, fetch=fetch_sectors) -> dict[str, str]:
     """Secteurs de `symbols`, lus dans `path` (colonnes symbol, secteur ; modifiable à la main) ;
-    ceux qui manquent sont demandés à Yahoo et ajoutés au fichier."""
+    ceux qui manquent ou sont vides sont demandés à Yahoo et ajoutés au fichier."""
     known = {}
     if path.exists():
         table = pd.read_csv(path, dtype=str, keep_default_na=False)
         known = dict(zip(table["symbol"], table["secteur"]))
-    missing = [s for s in symbols if s not in known]
+    missing = [s for s in symbols if not known.get(s)]
     if missing:
         fetched = fetch(missing)
         if len(fetched) < len(missing):
