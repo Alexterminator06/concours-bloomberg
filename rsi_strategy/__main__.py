@@ -14,7 +14,8 @@ import pandas as pd
 from .backtest import compute_signals, market_is_bullish, run_backtest
 from .config import StrategyConfig
 from .data import download_ohlcv, fx_tickers, load_ohlcv, to_usd
-from .metrics import benchmark_equity, performance_stats, relative_stats, trade_stats
+from .metrics import (aligned_prices, benchmark_equity, performance_stats, relative_stats,
+                      trade_stats)
 from .portfolio import load_portfolio, plan_orders
 from .report import format_table, plot_performance, print_section, save_csv
 from .universe import load_universe
@@ -239,7 +240,7 @@ def cmd_backtest(args) -> None:
 
     curves = {"Stratégie RSI": equity}
     for b in cfg.benchmarks:
-        if b not in bench_close or pd.isna(bench_close[b].reindex(dates).iloc[0]):
+        if b not in bench_close or pd.isna(aligned_prices(bench_close[b], dates).iloc[0]):
             print(f"  ! {b} : pas de cours au {dates[0].date()}, indice ignoré")
             continue
         curves[b] = benchmark_equity(bench_close[b], dates, cfg.initial_capital)
@@ -258,7 +259,7 @@ def cmd_backtest(args) -> None:
           f"capital initial {cfg.initial_capital:,.0f} $".replace(",", " "))
     print(f"Signal : {signal_label(cfg)} · stop -{cfg.stop_loss_pct:.0%} · take profit "
           f"{take_profit_label(cfg)}"
-          + (f" · {_core_label(cfg)} dans les {cfg.core_size} plus grandes valeurs US du WLS"
+          + (f" · {_core_label(cfg)} dans les {cfg.core_size} plus grandes valeurs du WLS"
              if core_shares is not None else ""))
     print_section("Performance : stratégie vs indices", format_table(perf))
     if rel:

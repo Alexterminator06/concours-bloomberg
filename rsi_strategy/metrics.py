@@ -82,7 +82,12 @@ def trade_stats(trades: pd.DataFrame) -> dict:
     }
 
 
+def aligned_prices(close: pd.Series, dates: pd.DatetimeIndex) -> pd.Series:
+    """Cours de l'indice aux `dates`, repris du dernier jour coté (jour férié de sa bourse)."""
+    return close.reindex(close.index.union(dates)).ffill().reindex(dates)
+
+
 def benchmark_equity(close: pd.Series, dates: pd.DatetimeIndex, capital: float) -> pd.Series:
     """Valeur d'un investissement de `capital` en achat-conservation dans l'indice."""
-    px = close.reindex(dates).ffill()
+    px = aligned_prices(close, dates)
     return capital * px / px.iloc[0]

@@ -394,3 +394,12 @@ def test_default_puts_only_leftover_cash_in_largest_stocks():
     defaults = StrategyConfig()
     assert (defaults.core_size, defaults.core_min_pct) == (10, 0.0)
     assert defaults.take_profit_bull_pct == 0  # take profit fixe à 5 %
+
+
+def test_benchmark_uses_last_known_price_on_its_holidays():
+    from rsi_strategy.metrics import benchmark_equity
+
+    index_prices = pd.Series([100.0, 110.0], index=pd.to_datetime(["2024-07-03", "2024-07-05"]))
+    dates = pd.to_datetime(["2024-07-04", "2024-07-05"])  # 4 juillet : Wall Street fermée
+    curve = benchmark_equity(index_prices, dates, 1_000_000)
+    assert curve.tolist() == pytest.approx([1_000_000, 1_100_000])

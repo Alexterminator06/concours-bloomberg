@@ -73,6 +73,7 @@ def test_download_summarises_tickers_without_prices(monkeypatch, capsys):
         return raw
 
     monkeypatch.setattr(yf, "download", fake_yf_download)
+    monkeypatch.setattr(data, "PAUSE", 0)
     level = logging.getLogger("yfinance").level
     panel = data.download_ohlcv(["OLD", "NEW"], "2019-01-01", "2019-02-01")
 
@@ -81,3 +82,54 @@ def test_download_summarises_tickers_without_prices(monkeypatch, capsys):
     assert "1 action(s) sans cours sur la période" in out.out
     assert "Data doesn't exist" not in out.err
     assert logging.getLogger("yfinance").level == level
+
+
+RATE_LIMIT = "YFRateLimitError('Too Many Requests. Rate limited. Try after a while.')"
+
+
+def fake_yahoo(monkeypatch, refuse_times: dict[str, int]):
+    """yf.download simulé : chaque ticker de `refuse_times` est refusé (limite de requêtes) le
+    nombre de fois indiqué, puis servi. Le samedi et le dimanche n'ont pas de cotation."""
+    import logging
+
+    import yfinance as yf
+
+    calls = []
+
+    def download(chunk, start, end, **kwargs):
+        calls.append(list(chunk))
+        idx = pd.date_range(start, periods=7)  # du lundi au dimanche
+        raw = pd.DataFrame(1.0, index=idx, columns=pd.MultiIndex.from_product([data.FIELDS, chunk]))
+        refused = [t for t in chunk if refuse_times.get(t, 0) > 0]
+        for t in refused:
+            refuse_times[t] -= 1
+            raw.loc[:, (slice(None), t)] = float("nan")
+        if refused:
+            logging.getLogger("yfinance").error(f"{refused}: {RATE_LIMIT}")
+        return raw
+
+    monkeypatch.setattr(yf, "download", download)
+    monkeypatch.setattr(data, "PAUSE", 0)
+    monkeypatch.setattr(data, "RETRY_WAITS", (0, 0, 0))
+    return calls
+
+
+def test_rate_limited_tickers_are_downloaded_again(monkeypatch, capsys):
+    calls = fake_yahoo(monkeypatch, {"BBB": 2})
+    report = {}
+    panel = data.download_ohlcv(["AAA", "BBB"], "2024-01-01", "2024-02-01", report=report)
+    assert sorted(panel["Close"].columns) == ["AAA", "BBB"]
+    assert calls == [["AAA", "BBB"], ["BBB"], ["BBB"]]
+    assert report["refused"] == set()
+    assert list(panel["Close"].index.dayofweek) == [0, 1, 2, 3, 4]  # pas de week-end
+    assert "Too Many Requests" not in capsys.readouterr().err
+
+
+def test_incomplete_download_is_reported_and_not_cached(tmp_path, monkeypatch, capsys):
+    fake_yahoo(monkeypatch, {"BBB": 99})
+    panel = data.load_ohlcv(["AAA", "BBB"], "2024-01-01", "2024-02-01", tmp_path)
+    assert list(panel["Close"].columns) == ["AAA"]
+    out = capsys.readouterr().out
+    assert "1 action(s) non téléchargées : Yahoo a limité le nombre de requêtes" in out
+    assert "Cache non enregistré : téléchargement incomplet" in out
+    assert not list(tmp_path.glob("ohlcv_*.pkl"))

@@ -69,6 +69,7 @@ def test_alternative_spelling_is_tried_when_main_symbol_has_no_prices(monkeypatc
         return raw
 
     monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(data, "PAUSE", 0)
     panel = data.download_ohlcv(["2330.TW", "6488.TW"], "2024-01-01", "2024-02-01",
                                 alternatives={"6488.TW": ["6488.TWO"]})
     assert sorted(panel["Close"].columns) == ["2330.TW", "6488.TW"]

@@ -242,8 +242,11 @@ connues en 2026.
   ajoute le risque de change aux positions étrangères. Certaines places imposent des lots
   (100 actions au Japon, en Chine…) : arrondissez si la plateforme les exige.
 - **Volume de données** : télécharger 10 000 actions prend nettement plus de temps qu'avant
-  (plusieurs minutes par backtest sans cache, et pour chaque scan quotidien) ; le cache d'une
-  période pèse environ 250 Mo.
+  (de l'ordre de 15 à 30 minutes par backtest sans cache, et pour chaque scan quotidien) ; le
+  cache d'une période pèse environ 250 Mo. Au-delà d'un certain nombre de requêtes, Yahoo bloque
+  temporairement (« Too Many Requests ») : le téléchargement ralentit, attend et réessaie
+  automatiquement. Si des actions manquent encore, un avertissement l'indique, les résultats
+  sont incomplets et rien n'est mis en cache : relancez plus tard.
 - **SMMD** n'existe que depuis juillet 2017. Pour un backtest antérieur, utiliser par exemple
   `--benchmarks VT IWM`.
 
