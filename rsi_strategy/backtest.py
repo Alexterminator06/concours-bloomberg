@@ -155,8 +155,12 @@ class CoreSleeve:
     """
 
     def __init__(self, col: dict[str, int], index_shares: pd.Series, size: int,
-                 comm: float, slip: float, caps_now: pd.Series | None = None):
+                 comm: float, slip: float, caps_now: pd.Series | None = None,
+                 sectors: dict[str, str] | None = None, sector_max: int = 0):
         self.col, self.size, self.comm, self.slip = col, size, comm, slip
+        self.sectors, self.sector_max = sectors or {}, sector_max
+        # Poids visés dans la part grandes valeurs (None = parts à peu près égales).
+        self.targets: dict[str, float] | None = None
         self.index_shares = {t: float(n) for t, n in index_shares.items() if t in col}
         caps_now = pd.Series(dtype=float) if caps_now is None else caps_now
         self.max_caps = {t: MAX_PAST_CAP_RATIO * float(c) for t, c in caps_now.items()
@@ -186,9 +190,54 @@ class CoreSleeve:
                 if np.isfinite(first) and np.isfinite(last) and first > 0:
                     momentum[t] = last / first - 1
             if momentum:
-                self.members = sorted(momentum, key=momentum.get, reverse=True)[:self.size]
+                self.members = self._pick(sorted(momentum, key=momentum.get, reverse=True))
                 return
-        self.members = ranked[:self.size]
+        self.members = self._pick(ranked)
+
+    def _pick(self, ranked: list[str]) -> list[str]:
+        """Les `size` premières du classement, au plus `sector_max` par secteur (secteur inconnu :
+        pas de plafond)."""
+        if not self.sector_max:
+            return ranked[:self.size]
+        counts: dict[str, int] = {}
+        members = []
+        for t in ranked:
+            sector = self.sectors.get(t) or t
+            if counts.get(sector, 0) < self.sector_max:
+                members.append(t)
+                counts[sector] = counts.get(sector, 0) + 1
+            if len(members) == self.size:
+                break
+        return members
+
+    def set_inverse_vol_targets(self, window: np.ndarray) -> None:
+        """Poids visés proportionnels à l'inverse de la volatilité des rendements journaliers,
+        d'après `window` (cours séances x membres, dans l'ordre de `members`). Une volatilité
+        inconnue prend la médiane des autres."""
+        with np.errstate(divide="ignore", invalid="ignore"):
+            vols = np.nanstd(np.diff(np.log(window), axis=0), axis=0)
+        known = vols[np.isfinite(vols) & (vols > 0)]
+        fallback = float(np.median(known)) if len(known) else 1.0
+        vols = np.where(np.isfinite(vols) & (vols > 0), vols, fallback)
+        inverse = 1.0 / vols
+        self.targets = dict(zip(self.members, inverse / inverse.sum()))
+
+    def trim_to_targets(self, prices: np.ndarray) -> float:
+        """Vend ce qui dépasse le poids visé de chaque ligne ; renvoie le cash obtenu, que les
+        achats du jour replacent dans les lignes sous leur poids."""
+        if not self.targets:
+            return 0.0
+        total = self.value(prices)
+        cash = 0.0
+        for t in list(self.holdings):
+            price = self._price(t, prices)
+            if not np.isfinite(price) or price <= 0:
+                continue
+            excess = self.holdings[t] * price - self.targets.get(t, 0.0) * total
+            shares = min(self.holdings[t], int(excess // price))
+            if shares > 0:
+                cash += self._sell(t, shares, price)
+        return cash
 
     def value(self, prices: np.ndarray) -> float:
         return sum(n * self._price(t, prices) for t, n in self.holdings.items()
@@ -249,7 +298,10 @@ class CoreSleeve:
         """Vend des grandes valeurs, des plus grosses lignes aux plus petites, pour obtenir au
         moins `amount` ; renvoie le cash obtenu."""
         cash = 0.0
-        by_value = sorted(self.holdings, key=lambda t: -self.holdings[t] * self._price(t, prices))
+        # Des plus grosses lignes aux plus petites, ou des plus au-dessus de leur poids visé.
+        weight = (lambda t: 1.0) if not self.targets else (lambda t: self.targets.get(t, 1e-9))
+        by_value = sorted(self.holdings,
+                          key=lambda t: -self.holdings[t] * self._price(t, prices) / weight(t))
         for t in by_value:
             price = self._price(t, prices)
             if cash >= amount or not np.isfinite(price):
@@ -267,14 +319,38 @@ class CoreSleeve:
         if cash < min_order or not values:
             return 0.0
         count = max(1, min(len(values), int(cash // min_order)))
+        # Les lignes les moins représentées (par rapport à leur poids visé), à parts égales ou
+        # selon leur poids visé.
+        weight = {t: 1.0 if not self.targets else self.targets.get(t, 0.0) for t in values}
+        chosen = sorted(values, key=lambda t: values[t] / max(weight[t], 1e-9))[:count]
+        total_weight = sum(weight[t] for t in chosen) or 1.0
         spent = 0.0
-        for t in sorted(values, key=values.get)[:count]:
-            amount = min(cash / count, max_value - values[t])
+        for t in chosen:
+            amount = min(cash * weight[t] / total_weight, max_value - values[t])
             unit = self._price(t, prices) * (1 + self.slip) * (1 + self.comm)
             shares = int(amount // unit) if amount > 0 else 0
             if shares > 0:
                 spent += self._buy(t, shares, self._price(t, prices))
         return spent
+
+
+def largest_each_month(close: pd.DataFrame, core_shares: pd.Series, n: int,
+                       start: str | pd.Timestamp, end: str | pd.Timestamp,
+                       core_caps_now: pd.Series | None = None) -> set[str]:
+    """Candidates classées parmi les `n` plus grandes capitalisations au début d'au moins un mois
+    de la période, comme dans le backtest (cours de la veille) : celles dont on aura besoin du
+    secteur."""
+    dates = close.index
+    prices = close.ffill().to_numpy(dtype=float)
+    sleeve = CoreSleeve({t: j for j, t in enumerate(close.columns)}, core_shares, n, 0.0, 0.0,
+                        core_caps_now)
+    rows = np.flatnonzero((dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end)))
+    found: set[str] = set()
+    for k, i in enumerate(rows):
+        if k == 0 or dates[i - 1].month != dates[i].month:
+            sleeve.select(prices[max(i - 1, 0)])
+            found |= set(sleeve.members)
+    return found
 
 
 def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
@@ -284,7 +360,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                  core_shares: pd.Series | None = None,
                  price_filter: list[str] | None = None,
                  core_no_rsi: list[str] | None = None,
-                 core_caps_now: pd.Series | None = None) -> BacktestResult:
+                 core_caps_now: pd.Series | None = None,
+                 core_sectors: dict[str, str] | None = None) -> BacktestResult:
     """Simule la stratégie sur `panel` ({Open, High, Low, Close, Volume} -> DataFrame dates x tickers).
 
     Les données avant `start` servent uniquement au calcul des indicateurs (période de chauffe).
@@ -295,7 +372,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
     candidates jamais achetées par le RSI (défaut : toutes) ; les autres ne le sont pas pendant les
     mois où elles font partie des grandes valeurs. `core_caps_now` : capitalisations actuelles des
     candidates, dans l'unité de `core_shares` x cours, pour écarter les estimations passées
-    absurdes (voir `MAX_PAST_CAP_RATIO`).
+    absurdes (voir `MAX_PAST_CAP_RATIO`). `core_sectors` : secteur de chaque candidate, pour le
+    plafond par secteur (`cfg.core_sector_max`).
     """
     close = panel["Close"]
     rsi_values, eligible = compute_signals(panel, cfg, market_close, price_filter)
@@ -338,7 +416,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
 
     core = None
     if cfg.core_size and core_shares is not None and len(core_shares):
-        core = CoreSleeve(col, core_shares, cfg.core_size, comm, slip, core_caps_now)
+        core = CoreSleeve(col, core_shares, cfg.core_size, comm, slip, core_caps_now,
+                          sectors=core_sectors, sector_max=cfg.core_sector_max)
         no_rsi = core.index_shares if core_no_rsi is None else [t for t in core_no_rsi if t in col]
         ELIG[:, [col[t] for t in no_rsi]] = False  # pas de signal RSI sur les grandes valeurs
 
@@ -369,6 +448,11 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                 core.select(C_ffill[prev])
             core.history.append((d, list(core.members)))
             cash += core.sell_non_members(open_px)
+            if cfg.core_inverse_vol and core.members:
+                window = C_ffill[max(prev - cfg.core_vol_days, 0):prev + 1,
+                                 [col[t] for t in core.members]]
+                core.set_inverse_vol_targets(window)
+                cash += core.trim_to_targets(open_px)
 
         # 1. Achats RSI à l'ouverture (ordres de la veille, du RSI le plus bas au plus haut),
         #    financés si besoin en vendant des grandes valeurs, sans entamer leur part réservée.

@@ -73,6 +73,14 @@ class StrategyConfig:
     # candidates (+60 et +98 points face à VT, contre +40 et +69).
     core_rel_momentum_months: int = 12
     core_momentum_pool: int = 50
+    # Plafond par secteur (0 = désactivé) : en descendant le classement du mois, au plus N grandes
+    # valeurs du même secteur (secteurs Yahoo Finance). Backtest seulement pour l'instant.
+    core_sector_max: int = 0
+    # Pondération (False = parts à peu près égales) : chaque grande valeur vise un poids
+    # proportionnel à l'inverse de sa volatilité sur `core_vol_days` séances, rééquilibré chaque
+    # mois. Backtest seulement pour l'instant.
+    core_inverse_vol: bool = False
+    core_vol_days: int = 63
 
     # --- Coûts de transaction (aucun dans le concours Bloomberg) ---
     commission_bps: float = 0.0  # commission par ordre, en points de base du montant

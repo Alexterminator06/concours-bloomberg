@@ -362,6 +362,35 @@ def test_past_caps_inflated_by_a_massive_share_issue_are_ignored():
     assert set(res.core_summary["ticker"]) == {"BIG1"}
 
 
+def test_sector_cap_skips_largest_stocks_of_a_full_sector():
+    panel = core_panel(BIG4=[100.0] * 40)
+    shares = pd.Series({"BIG1": 40.0, "BIG2": 30.0, "BIG3": 20.0, "BIG4": 10.0})
+    sectors = {"BIG1": "Tech", "BIG2": "Tech", "BIG3": "Tech", "BIG4": "Energy"}
+    res = run_backtest(panel, cfg(core_size=3), core_shares=shares, core_sectors=sectors)
+    assert set(res.core_holdings) == {"BIG1", "BIG2", "BIG3"}
+    res = run_backtest(panel, cfg(core_size=3, core_sector_max=2), core_shares=shares,
+                       core_sectors=sectors)
+    assert set(res.core_holdings) == {"BIG1", "BIG2", "BIG4"}  # BIG3 : déjà 2 valeurs Tech
+
+
+def test_inverse_volatility_weights_favour_calm_largest_stocks():
+    n = 60
+    calm = [100.0 * (1.002 if k % 2 else 1.0) for k in range(n)]  # +-0,2 % par séance
+    wild = [100.0 * (1.04 if k % 2 else 1.0) for k in range(n)]   # +-4 % par séance
+    panel = make_panel({"A": [50.0] * n, "CALM": calm, "WILD": wild})
+    shares = pd.Series({"CALM": 10.0, "WILD": 10.0})
+    start = panel["Close"].index[30]
+
+    def ratio(**kw):
+        res = run_backtest(panel, cfg(core_size=2, position_size_pct=1.0, **kw), start=start,
+                           core_shares=shares)
+        last = panel["Close"].iloc[-1]
+        return (res.core_holdings["CALM"] * last["CALM"]) / (res.core_holdings["WILD"] * last["WILD"])
+
+    assert 0.5 < ratio() < 2  # parts à peu près égales
+    assert ratio(core_inverse_vol=True, core_vol_days=20) > 5  # volatilité 20 fois plus faible
+
+
 def test_largest_stocks_are_sold_to_fund_rsi_buys():
     panel = make_panel({"A": declining(), "B1": [100.0] * 20, "B2": [100.0] * 20,
                         "B3": [100.0] * 20, "B4": [100.0] * 20, "B5": [100.0] * 20})
@@ -375,7 +404,9 @@ def test_largest_stocks_are_sold_to_fund_rsi_buys():
     assert (eq["cash"] >= -1e-6).all()
 
 
-def test_accounting_with_largest_stocks_on_random_walks():
+@pytest.mark.parametrize("options", [{}, {"core_inverse_vol": True, "core_vol_days": 20},
+                                     {"core_sector_max": 2}])
+def test_accounting_with_largest_stocks_on_random_walks(options):
     rng = np.random.default_rng(3)
     n_days, n_small, n_big = 300, 30, 6
     close = 30 * np.exp(np.cumsum(rng.normal(-0.0003, 0.03, (n_days, n_small + n_big)), axis=0))
@@ -388,14 +419,18 @@ def test_accounting_with_largest_stocks_on_random_walks():
     shares = pd.Series({f"BIG{k}": float(100 + k) for k in range(n_big)})
     market = pd.Series(np.linspace(100, 130, n_days), index=panel["Close"].index)
 
-    c = cfg(core_size=4, commission_bps=5, slippage_bps=5, take_profit_bull_pct=0.10, bull_ma_days=20)
+    sectors = {f"BIG{k}": "Tech" if k < 4 else "Energy" for k in range(n_big)}
+    c = cfg(core_size=4, commission_bps=5, slippage_bps=5, take_profit_bull_pct=0.10, bull_ma_days=20,
+            **options)
     res = run_backtest(panel, c, start=panel["Close"].index[40], market_close=market,
-                       core_shares=shares)
+                       core_shares=shares, core_sectors=sectors)
     eq = res.equity
     assert len(res.trades) > 10
     assert eq["core"].mean() > 0
     assert (eq["cash"] >= -1e-6).all()
     assert len(res.core_holdings) <= c.core_size
+    if c.core_sector_max:
+        assert sum(sectors[t] == "Tech" for t in res.core_holdings) <= c.core_sector_max
     assert not set(res.trades["ticker"]) & set(shares.index)
     unrealized = res.open_positions["unrealized_pnl"].sum() if not res.open_positions.empty else 0.0
     assert eq["equity"].iloc[-1] - c.initial_capital == pytest.approx(

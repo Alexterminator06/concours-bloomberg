@@ -222,3 +222,48 @@ def _write_cache(panel: dict[str, pd.DataFrame], path: Path) -> None:
             old.unlink(missing_ok=True)
     for old in path.parent.glob("ohlcv_*.tmp"):
         old.unlink(missing_ok=True)
+
+
+def fetch_sectors(symbols: list[str]) -> dict[str, str]:
+    """Secteur Yahoo Finance de chaque action (« Technology », « Healthcare »...), « » si Yahoo
+    n'en donne pas. Les actions que Yahoo refuse de servir (limite de requêtes) sont absentes."""
+    import yfinance as yf
+    from yfinance.exceptions import YFRateLimitError
+
+    print(f"Secteurs de {len(symbols)} action(s) (Yahoo Finance) ...")
+    sectors: dict[str, str] = {}
+    for k, symbol in enumerate(symbols):
+        for attempt in range(len(RETRY_WAITS) + 1):
+            try:
+                sectors[symbol] = str(yf.Ticker(symbol).get_info().get("sector") or "")
+                break
+            except YFRateLimitError:
+                if attempt == len(RETRY_WAITS):
+                    break
+                print(f"    Yahoo limite les requêtes : pause de {RETRY_WAITS[attempt]} s...")
+                time.sleep(RETRY_WAITS[attempt])
+            except Exception:  # action inconnue de Yahoo, réponse incomplète...
+                sectors[symbol] = ""
+                break
+        if (k + 1) % 50 == 0:
+            print(f"  {k + 1} / {len(symbols)}")
+    return sectors
+
+
+def load_sectors(symbols: list[str], path: Path, fetch=fetch_sectors) -> dict[str, str]:
+    """Secteurs de `symbols`, lus dans `path` (colonnes symbol, secteur ; modifiable à la main) ;
+    ceux qui manquent sont demandés à Yahoo et ajoutés au fichier."""
+    known = {}
+    if path.exists():
+        table = pd.read_csv(path, dtype=str, keep_default_na=False)
+        known = dict(zip(table["symbol"], table["secteur"]))
+    missing = [s for s in symbols if s not in known]
+    if missing:
+        fetched = fetch(missing)
+        if len(fetched) < len(missing):
+            print(f"  ! Secteur inconnu pour {len(missing) - len(fetched)} action(s) (Yahoo a "
+                  f"limité les requêtes) : pas de plafond pour elles cette fois.")
+        known.update(fetched)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(sorted(known.items()), columns=["symbol", "secteur"]).to_csv(path, index=False)
+    return {s: known[s] for s in symbols if s in known}

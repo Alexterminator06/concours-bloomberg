@@ -151,3 +151,19 @@ def test_incomplete_download_is_reported_and_not_cached(tmp_path, monkeypatch, c
     assert "1 action(s) non téléchargées : Yahoo a limité le nombre de requêtes" in out
     assert "Cache non enregistré : téléchargement incomplet" in out
     assert not list(tmp_path.glob("ohlcv_*.pkl"))
+
+
+def test_sectors_are_fetched_once_and_cached(tmp_path):
+    from rsi_strategy.data import load_sectors
+
+    calls = []
+
+    def fetch(symbols):  # Yahoo refuse LIMIT (limite de requêtes) et n'a pas de secteur pour X
+        calls.append(list(symbols))
+        return {s: "" if s == "X" else "Tech" for s in symbols if s != "LIMIT"}
+
+    path = tmp_path / "data" / "secteurs.csv"
+    assert load_sectors(["A", "LIMIT", "X"], path, fetch=fetch) == {"A": "Tech", "X": ""}
+    assert load_sectors(["A", "C", "LIMIT", "X"], path, fetch=fetch) == {
+        "A": "Tech", "C": "Tech", "X": ""}
+    assert calls == [["A", "LIMIT", "X"], ["C", "LIMIT"]]  # LIMIT redemandée, pas A ni X

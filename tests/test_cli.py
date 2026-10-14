@@ -276,3 +276,32 @@ def test_backtest_command_with_momentum_options(tmp_path, monkeypatch, capsys):
     assert "au meilleur momentum 12 mois" in out and "a baissé sur 12 mois" in out
     assert "(candidates : les 3 plus grandes actuelles)" in out
     assert re.search(r"Séances sans grandes valeurs\s+\d+\.\d\d%", out)
+
+
+def test_backtest_with_sector_cap_and_inverse_volatility(tmp_path, monkeypatch, capsys):
+    rows = [f"S{k} UN Equity,Small {k},0.001,10,100" for k in range(30)]
+    rows += [f"BIG{k} UW Equity,Big {k},{3 - k},10000,200" for k in range(3)]
+    source = tmp_path / "WLS.csv"
+    source.write_text("Ticker,Name,Weight,Shares,Price\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "load_ohlcv",
+                        lambda tickers, start, end, cache, refresh=False, **kw: fake_panel(tickers, start, end))
+    monkeypatch.setattr(cli, "fetch_sectors",
+                        lambda symbols: {s: "Energy" if s == "BIG2" else "Tech" for s in symbols})
+    cli.main(["import-wls", str(source)])
+    cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
+              "--core-size", "2", "--core-sector-max", "1", "--core-inverse-vol"])
+    out = capsys.readouterr().out
+    assert "1 au plus par secteur, pondérées par l'inverse de leur volatilité 63 séances" in out
+    sectors = pd.read_csv(tmp_path / "data" / "secteurs.csv")
+    assert set(sectors["symbol"]) == {"BIG0", "BIG1", "BIG2"}
+    # Une seule valeur Tech à la fois : BIG2, seule de son secteur, est toujours retenue.
+    daily = pd.read_csv(tmp_path / "grandes_valeurs_jour.csv", index_col=0)
+    assert "BIG2" in daily.columns
+
+
+def test_scan_refuses_backtest_only_large_stock_options(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    for option in (["--core-sector-max", "3"], ["--core-inverse-vol"]):
+        with pytest.raises(SystemExit, match="qu'au backtest"):
+            cli.main(["scan", *option])

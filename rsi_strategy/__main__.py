@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from .backtest import (compute_signals, lookback_rows, market_is_bullish, market_is_falling,
-                       run_backtest)
+from .backtest import (compute_signals, largest_each_month, lookback_rows, market_is_bullish,
+                       market_is_falling, run_backtest)
 from .config import StrategyConfig
-from .data import download_ohlcv, fx_tickers, load_ohlcv, to_usd
+from .data import download_ohlcv, fetch_sectors, fx_tickers, load_ohlcv, load_sectors, to_usd
 from .metrics import (aligned_prices, benchmark_equity, performance_stats, relative_stats,
                       trade_stats)
 from .portfolio import load_portfolio, plan_orders
@@ -86,6 +86,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--core-momentum-pool", type=int, default=defaults.core_momentum_pool,
                    metavar="N", help="candidates du momentum relatif : les N plus grandes "
                                      f"capitalisations (défaut {defaults.core_momentum_pool})")
+    s.add_argument("--core-sector-max", type=int, default=defaults.core_sector_max, metavar="N",
+                   help="backtest : au plus N grandes valeurs du même secteur (secteurs Yahoo "
+                        "Finance, gardés dans data/secteurs.csv ; 0 = pas de plafond)")
+    s.add_argument("--core-inverse-vol", action="store_true",
+                   help="backtest : pondérer les grandes valeurs par l'inverse de leur volatilité "
+                        f"sur {defaults.core_vol_days} séances, rééquilibrées chaque mois (par "
+                        "défaut : parts à peu près égales)")
     s.add_argument("--core-candidates", type=int, default=defaults.core_candidates, metavar="N",
                    help="backtest : chercher chaque mois les plus grandes capitalisations de "
                         "l'époque parmi les N plus grandes actuelles du WLS (défaut "
@@ -124,7 +131,8 @@ def config_from_args(args) -> StrategyConfig:
         take_profit_bull_pct=args.take_profit_bull, core_size=args.core_size,
         core_min_pct=args.core_min, core_abs_momentum_months=args.core_abs_momentum,
         core_rel_momentum_months=args.core_rel_momentum, core_momentum_pool=args.core_momentum_pool,
-        core_candidates=args.core_candidates,
+        core_candidates=args.core_candidates, core_sector_max=args.core_sector_max,
+        core_inverse_vol=args.core_inverse_vol,
         stop_first_if_ambiguous=not args.take_profit_first,
         commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
         benchmarks=args.benchmarks,
@@ -222,6 +230,11 @@ def _core_label(cfg: StrategyConfig) -> str:
     else:
         which = f"les {cfg.core_size} plus grandes valeurs du WLS"
     label = f"{share} dans {which}"
+    if cfg.core_sector_max:
+        label += f", {cfg.core_sector_max} au plus par secteur"
+    if cfg.core_inverse_vol:
+        label += (f", pondérées par l'inverse de leur volatilité {cfg.core_vol_days} séances "
+                  f"(rééquilibrage mensuel)")
     if cfg.core_candidates:
         label += f" (candidates : les {cfg.core_candidates} plus grandes actuelles)"
     if cfg.core_abs_momentum_months:
@@ -311,10 +324,18 @@ def cmd_backtest(args) -> None:
         core_shares = core_pool.set_index("symbol")["index_shares_m"]
         core_shares = core_shares[core_shares.index.isin(panel["Close"].columns)]
         core_caps_now = core_pool.set_index("symbol")["mcap_usd"] / 1e6  # comme titres (M) x cours
+    core_sectors = None
+    if cfg.core_sector_max and core_shares is not None:
+        # Secteurs des actions qui peuvent entrer dans le classement d'un mois de la période.
+        ranked = (cfg.core_momentum_pool if cfg.core_rel_momentum_months else 4 * cfg.core_size)
+        needed = largest_each_month(panel["Close"], core_shares, ranked, args.start, args.end,
+                                    core_caps_now)
+        core_sectors = load_sectors(sorted(needed), ROOT / "data" / "secteurs.csv",
+                                    fetch=fetch_sectors)
     result = run_backtest(panel, cfg, start=args.start, end=args.end,
                           market_close=bench_close.get(market), core_shares=core_shares,
                           price_filter=_us_symbols(wls), core_no_rsi=core_no_rsi,
-                          core_caps_now=core_caps_now)
+                          core_caps_now=core_caps_now, core_sectors=core_sectors)
     equity = result.equity["equity"]
     dates = equity.index
 
@@ -396,6 +417,9 @@ def _money(value: float, signed: bool = False) -> str:
 
 def cmd_scan(args) -> None:
     cfg = config_from_args(args)
+    if cfg.core_sector_max or cfg.core_inverse_vol:
+        raise SystemExit("--core-sector-max et --core-inverse-vol ne servent pour l'instant "
+                         "qu'au backtest.")
     tickers, wls = _universe(args, cfg)
     portfolio = None
     if args.portfolio_file.exists():
