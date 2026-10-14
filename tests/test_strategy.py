@@ -390,9 +390,9 @@ def test_reserved_share_of_largest_stocks_limits_rsi_buys():
 
 
 
-def test_default_puts_only_leftover_cash_in_largest_stocks():
+def test_default_reserves_half_of_the_portfolio_for_largest_stocks():
     defaults = StrategyConfig()
-    assert (defaults.core_size, defaults.core_min_pct) == (10, 0.0)
+    assert (defaults.core_size, defaults.core_min_pct) == (10, 0.5)
     assert defaults.take_profit_bull_pct == 0  # take profit fixe à 5 %
 
 

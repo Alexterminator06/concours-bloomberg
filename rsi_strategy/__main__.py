@@ -68,8 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--core-size", type=int, default=defaults.core_size,
                    help="nombre de grandes valeurs où placer le cash inutilisé (0 = désactivé)")
     s.add_argument("--core-min", type=float, default=defaults.core_min_pct,
-                   help="part du portefeuille réservée aux grandes valeurs, ex. 0.5 (défaut 0 : "
-                        "seulement le cash que les achats RSI n'utilisent pas)")
+                   help=f"part du portefeuille réservée aux grandes valeurs (défaut "
+                        f"{defaults.core_min_pct:g} ; 0 = seulement le cash que les achats RSI "
+                        f"n'utilisent pas)")
     s.add_argument("--take-profit-first", action="store_true",
                    help="si stop et objectif sont touchés la même séance, retenir l'objectif "
                         "(hypothèse optimiste ; par défaut on retient le stop)")

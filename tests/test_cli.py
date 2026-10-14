@@ -157,6 +157,20 @@ def test_scan_places_leftover_cash_in_largest_stocks(tmp_path, monkeypatch, caps
     assert "2. Acheter ces grandes valeurs avec le cash restant" in out  # pas de vente : 2 étapes
 
 
+def test_scan_reserves_half_of_the_portfolio_for_largest_stocks_by_default(tmp_path, monkeypatch, capsys):
+    run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD,1000,400\n",
+             wls_text=WLS_EXPORT, extra_args=["--core-size", "2"])
+    orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
+    held = 1_000 * pullback_panel(["HELD"], None, "2026-10-14")["Close"]["HELD"].iloc[-1]
+    equity = 600_000 + held
+    rsi = orders.loc[orders["type"] == "RSI", "montant_estime_usd"].sum()
+    core = orders.loc[orders["type"] != "RSI", "montant_estime_usd"].sum()
+    assert held + rsi <= 0.5 * equity  # les achats RSI n'utilisent que l'autre moitié
+    assert "SOFT" not in set(orders["ticker"])  # achetée sans part réservée (test précédent)
+    assert set(orders.loc[orders["type"] != "RSI", "ticker"]) == {"BIG1", "BIG2"}
+    assert core >= 2 * 0.19 * equity  # chacune au plafond de 20 % par position
+
+
 def test_backtest_command_with_largest_stocks(tmp_path, monkeypatch, capsys):
     rows = [f"S{k} UN Equity,Small {k},0.001,10,100" for k in range(30)]
     rows += [f"BIG{k} UW Equity,Big {k},{3 - k},10000,200" for k in range(3)]
@@ -180,7 +194,7 @@ def test_backtest_command_with_largest_stocks(tmp_path, monkeypatch, capsys):
 def test_scan_handles_foreign_stocks_and_bloomberg_tickers(tmp_path, monkeypatch, capsys):
     export = WLS_EXPORT + "6758 JT Equity,Sony Group,0.001,10,15000\n"
     run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD UQ Equity,1000,400\n",
-             wls_text=export, extra_args=["--core-size", "2"])
+             wls_text=export, extra_args=["--core-size", "2", "--core-min", "0"])
     out = capsys.readouterr().out
     assert "Portefeuille : portefeuille.csv (1 position(s)" in out
     orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
