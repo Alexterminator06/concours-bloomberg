@@ -113,13 +113,35 @@ def market_is_bullish(market_close: pd.Series, dates: pd.DatetimeIndex, ma_days:
     return (mkt > mkt.rolling(ma_days, min_periods=ma_days).mean()).to_numpy()
 
 
+def lookback_rows(dates: pd.DatetimeIndex, row: int, months: int,
+                  skip_months: int = 0) -> tuple[int, int]:
+    """Lignes de début et de fin d'une mesure de momentum faite à la date `dates[row]` : dernier
+    cours connu `months` mois plus tôt, et dernier cours connu `skip_months` mois plus tôt. Une
+    ligne vaut -1 si l'historique ne remonte pas assez loin."""
+    def before(when: pd.Timestamp) -> int:
+        return int(dates.searchsorted(when, side="right")) - 1
+
+    when = dates[row]
+    end = before(when - pd.DateOffset(months=skip_months)) if skip_months else row
+    return before(when - pd.DateOffset(months=months)), end
+
+
+def market_is_falling(market: np.ndarray, dates: pd.DatetimeIndex, row: int, months: int) -> bool:
+    """Momentum absolu : l'indice (cours alignés sur `dates`) a-t-il baissé sur `months` mois à la
+    date `dates[row]` ? Sans historique suffisant, on considère qu'il ne baisse pas."""
+    start, _ = lookback_rows(dates, row, months)
+    return bool(start >= 0 and market[row] <= market[start])
+
+
 class CoreSleeve:
     """Grandes valeurs détenues avec le cash que les achats RSI n'utilisent pas.
 
     Chaque mois, on retient les `size` plus grandes capitalisations parmi les candidates, estimées
     avec les cours de l'époque (titres de l'indice aujourd'hui x cours de la veille) : on ne
-    choisit donc pas les gagnantes connues aujourd'hui. Les achats vont aux valeurs les moins
-    représentées, les ventes partent des plus grosses lignes : peu d'ordres, poids proches.
+    choisit donc pas les gagnantes connues aujourd'hui. Avec le momentum relatif, on retient
+    plutôt, parmi les plus grandes capitalisations, celles qui ont le plus monté. Les achats vont
+    aux valeurs les moins représentées, les ventes partent des plus grosses lignes : peu d'ordres,
+    poids proches.
     """
 
     def __init__(self, col: dict[str, int], index_shares: pd.Series, size: int,
@@ -133,10 +155,24 @@ class CoreSleeve:
     def _price(self, ticker: str, prices: np.ndarray) -> float:
         return prices[self.col[ticker]]
 
-    def select(self, prices: np.ndarray) -> None:
+    def select(self, prices: np.ndarray, start_prices: np.ndarray | None = None,
+               end_prices: np.ndarray | None = None, pool: int = 0) -> None:
+        """Classement du mois. Avec `start_prices` et `end_prices` (cours de début et de fin de la
+        mesure de momentum), on retient parmi les `pool` plus grandes capitalisations les `size`
+        qui ont le plus monté ; sinon, les `size` plus grandes."""
         caps = {t: n * self._price(t, prices) for t, n in self.index_shares.items()
                 if np.isfinite(self._price(t, prices))}
-        self.members = sorted(caps, key=caps.get, reverse=True)[:self.size]
+        ranked = sorted(caps, key=caps.get, reverse=True)
+        if start_prices is not None and end_prices is not None:
+            momentum = {}
+            for t in ranked[:pool]:
+                first, last = self._price(t, start_prices), self._price(t, end_prices)
+                if np.isfinite(first) and np.isfinite(last) and first > 0:
+                    momentum[t] = last / first - 1
+            if momentum:
+                self.members = sorted(momentum, key=momentum.get, reverse=True)[:self.size]
+                return
+        self.members = ranked[:self.size]
 
     def value(self, prices: np.ndarray) -> float:
         return sum(n * self._price(t, prices) for t, n in self.holdings.items()
@@ -205,8 +241,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
     """Simule la stratégie sur `panel` ({Open, High, Low, Close, Volume} -> DataFrame dates x tickers).
 
     Les données avant `start` servent uniquement au calcul des indicateurs (période de chauffe).
-    `market_close` : cours de l'indice principal, requis pour le filtre de marché et le take profit
-    adapté à la tendance. `core_shares` : titres de l'indice (en millions) des grandes valeurs
+    `market_close` : cours de l'indice principal, requis pour le filtre de marché, le take profit
+    adapté à la tendance et le momentum absolu des grandes valeurs. `core_shares` : titres de l'indice (en millions) des grandes valeurs
     candidates, dont les cours figurent dans `panel` ; sans elles, le cash reste en cash.
     `price_filter` : tickers soumis au cours minimum (voir `compute_signals`).
     """
@@ -229,6 +265,13 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
             raise ValueError("Le take profit adapté à la tendance demande les cours de l'indice "
                              "(market_close).")
         bullish = market_is_bullish(market_close, dates, cfg.bull_ma_days)
+
+    market = None
+    if cfg.core_abs_momentum_months:
+        if market_close is None:
+            raise ValueError("Le momentum absolu des grandes valeurs demande les cours de l'indice "
+                             "(market_close).")
+        market = market_close.reindex(dates).ffill().to_numpy(dtype=float)
 
     tickers = list(close.columns)
     col = {t: j for j, t in enumerate(tickers)}
@@ -258,9 +301,20 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
         prev_equity = records[-1]["equity"] if records else cfg.initial_capital
         open_px = np.where(np.isfinite(O[i]), O[i], C_ffill[prev])  # à défaut, clôture de la veille
 
-        # 0. Grandes valeurs : nouveau classement chaque mois, sur les cours de la veille.
+        # 0. Grandes valeurs : nouveau classement chaque mois, sur les cours de la veille. Avec le
+        #    momentum absolu, elles passent en cash pour le mois si l'indice a baissé.
         if core is not None and (not records or dates[prev].month != d.month):
-            core.select(C_ffill[prev])
+            if market is not None and market_is_falling(market, dates, prev,
+                                                        cfg.core_abs_momentum_months):
+                core.members = []
+            elif cfg.core_rel_momentum_months:
+                first, last = lookback_rows(dates, prev, cfg.core_rel_momentum_months, 1)
+                if first >= 0:
+                    core.select(C_ffill[prev], C_ffill[first], C_ffill[last], cfg.core_momentum_pool)
+                else:  # historique trop court : les plus grandes capitalisations
+                    core.select(C_ffill[prev])
+            else:
+                core.select(C_ffill[prev])
             cash += core.sell_non_members(open_px)
 
         # 1. Achats RSI à l'ouverture (ordres de la veille, du RSI le plus bas au plus haut),

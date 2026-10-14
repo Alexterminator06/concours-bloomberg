@@ -57,6 +57,15 @@ class StrategyConfig:
     # Backtest : candidates (plus gros poids actuels du WLS) parmi lesquelles on retient chaque mois
     # les `core_size` plus grandes capitalisations de l'époque.
     core_pool_size: int = 100
+    # Momentum absolu (0 = désactivé) : au début de chaque mois, si l'indice principal a baissé sur
+    # ce nombre de mois, les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois
+    # suivant.
+    core_abs_momentum_months: int = 0
+    # Momentum relatif (0 = désactivé) : au début de chaque mois, parmi les `core_momentum_pool`
+    # plus grandes capitalisations, on retient les `core_size` qui ont le plus monté sur ce nombre
+    # de mois, en ignorant le dernier mois, au lieu des `core_size` plus grandes.
+    core_rel_momentum_months: int = 0
+    core_momentum_pool: int = 50
 
     # --- Coûts de transaction (aucun dans le concours Bloomberg) ---
     commission_bps: float = 0.0  # commission par ordre, en points de base du montant

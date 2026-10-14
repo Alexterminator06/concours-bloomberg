@@ -113,6 +113,9 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--take-profit-bull` | 0 (désactivé) | take profit quand VT est au-dessus de sa moyenne 200 séances (ex. 0.10) |
 | `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
 | `--core-min` | 0.5 | part du portefeuille réservée aux grandes valeurs ; les achats RSI n'utilisent que le reste (0 = seulement le cash restant) |
+| `--core-abs-momentum MOIS` | 0 (désactivé) | momentum absolu : au début de chaque mois, si VT a baissé sur ce nombre de mois (ex. 12), les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois suivant |
+| `--core-rel-momentum MOIS` | 0 (désactivé) | momentum relatif : chaque mois, garder les `--core-size` grandes valeurs qui ont le plus monté sur ce nombre de mois (ex. 12), hors dernier mois, au lieu des plus grandes |
+| `--core-momentum-pool N` | 50 | nombre de plus grandes capitalisations parmi lesquelles le momentum relatif choisit |
 | `--universe` | monde | `monde` : tous les membres du WLS ; `us` : small & mid caps américaines du WLS |
 | `--wls-file` | `data/wls_members.csv` | membres du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |

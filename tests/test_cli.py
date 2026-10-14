@@ -206,3 +206,61 @@ def test_scan_handles_foreign_stocks_and_bloomberg_tickers(tmp_path, monkeypatch
     sony_usd = pullback_panel(["6758.T"], None, "2026-10-14")["Close"]["6758.T"].iloc[-1] / 150
     assert rsi.loc["6758.T", "dernier_cours_usd"] == pytest.approx(sony_usd, rel=1e-4)
     assert "Taux de change (1 devises)" in out
+
+
+def _scan_with_market(tmp_path, monkeypatch, market_falls: bool, extra_args):
+    def download(tickers, start, end, **kw):
+        panel = pullback_panel(tickers, start, end)
+        if market_falls and tickers == ["VT"]:  # baisse régulière sur toute la période
+            panel = {f: df.iloc[::-1].set_axis(df.index) for f, df in panel.items()}
+        return panel
+
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "download_ohlcv", download)
+    (tmp_path / "WLS.csv").write_text(WLS_EXPORT, encoding="utf-8")
+    cli.main(["import-wls", str(tmp_path / "WLS.csv")])
+    (tmp_path / "portefeuille.csv").write_text(
+        "ticker,quantite,prix_achat\nCASH,100000,\nBIG1,1000,200\n", encoding="utf-8")
+    cli.main(["scan", "--core-size", "2", *extra_args])
+    return pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
+
+
+def test_scan_sells_largest_stocks_when_the_market_fell_over_12_months(tmp_path, monkeypatch, capsys):
+    orders = _scan_with_market(tmp_path, monkeypatch, True, ["--core-abs-momentum", "12"])
+    assert "grandes valeurs vendues" in capsys.readouterr().out
+    core = orders[orders["type"] == "grande valeur"]
+    assert list(core["ticker"]) == ["BIG1"] and list(core["etape"]) == ["1. vente"]  # rien racheté
+    held = 1_000 * pullback_panel(["BIG1"], None, "2026-10-14")["Close"]["BIG1"].iloc[-1]
+    rsi = orders.loc[orders["type"] == "RSI", "montant_estime_usd"].sum()
+    assert rsi <= 0.5 * (100_000 + held)  # la part des grandes valeurs reste en cash
+
+
+def test_scan_keeps_largest_stocks_when_the_market_rose(tmp_path, monkeypatch, capsys):
+    orders = _scan_with_market(tmp_path, monkeypatch, False, ["--core-abs-momentum", "12"])
+    assert "grandes valeurs conservées" in capsys.readouterr().out
+    # BIG1 n'est vendue qu'en partie, juste de quoi financer les achats RSI.
+    core = orders[orders["type"] == "grande valeur"]
+    assert list(core["ticker"]) == ["BIG1"] and 0 < core["quantite"].iloc[0] < 1_000
+
+
+def test_scan_ranks_largest_stocks_by_momentum(tmp_path, monkeypatch, capsys):
+    orders = _scan_with_market(tmp_path, monkeypatch, False, ["--core-rel-momentum", "12"])
+    assert "Grandes valeurs du mois (momentum 12 mois" in capsys.readouterr().out
+    assert set(orders.loc[orders["type"] == "grande valeur", "ticker"]) <= {"BIG1", "BIG2", "7203.T"}
+
+
+def test_backtest_command_with_momentum_options(tmp_path, monkeypatch, capsys):
+    rows = [f"S{k} UN Equity,Small {k},0.001,10,100" for k in range(30)]
+    rows += [f"BIG{k} UW Equity,Big {k},{3 - k},10000,200" for k in range(3)]
+    source = tmp_path / "WLS.csv"
+    source.write_text("Ticker,Name,Weight,Shares,Price\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "load_ohlcv",
+                        lambda tickers, start, end, cache, refresh=False, **kw: fake_panel(tickers, start, end))
+    cli.main(["import-wls", str(source)])
+    cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
+              "--core-size", "2", "--core-abs-momentum", "12", "--core-rel-momentum", "12",
+              "--core-momentum-pool", "3"])
+    out = capsys.readouterr().out
+    assert "au meilleur momentum 12 mois" in out and "a baissé sur 12 mois" in out
+    assert re.search(r"Séances sans grandes valeurs\s+\d+\.\d\d%", out)

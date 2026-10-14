@@ -156,7 +156,8 @@ def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Ser
     liquidity = cash + sum(kept.values()) * sell_unit
     # Part réservée aux grandes valeurs : les achats RSI n'utilisent que le reste.
     rsi_room = math.inf
-    if members and cfg.core_min_pct:
+    # (aussi quand les grandes valeurs sont passées en cash : leur part ne sert pas aux achats RSI)
+    if cfg.core_min_pct and (members or len(core_universe)):
         rsi_room = (1 - cfg.core_min_pct) * equity - pos.loc[~is_core, "valeur"].sum()
     spent = 0.0
     rows, skipped = {}, []

@@ -390,6 +390,55 @@ def test_reserved_share_of_largest_stocks_limits_rsi_buys():
 
 
 
+def test_lookback_rows_use_the_last_known_price_before_each_date():
+    from rsi_strategy.backtest import lookback_rows
+    dates = pd.bdate_range("2024-01-01", "2025-03-31")
+    row = dates.get_loc(pd.Timestamp("2025-03-14"))
+    start, end = lookback_rows(dates, row, 12, 1)
+    assert dates[start] == pd.Timestamp("2024-03-14")
+    assert dates[end] == pd.Timestamp("2025-02-14")
+    assert lookback_rows(dates, 10, 12) == (-1, 10)  # historique trop court
+
+
+def momentum_panel(n: int = 330):
+    flat = [100.0] * n
+    return make_panel({"A": [50.0] * n, "BIG1": flat, "BIG2": flat,
+                       "RISE": [100.0 * 1.002 ** k for k in range(n)],
+                       "TINY": [100.0 * 1.004 ** k for k in range(n)]})
+
+
+def test_relative_momentum_keeps_the_best_performers_among_the_largest():
+    panel = momentum_panel()
+    # RISE est la 3e capitalisation ; TINY monte plus vite, mais n'est pas parmi les 3 plus grandes.
+    shares = pd.Series({"BIG1": 30.0, "BIG2": 25.0, "RISE": 10.0, "TINY": 1.0})
+    dates = panel["Close"].index
+    c = cfg(core_size=1, core_rel_momentum_months=12, core_momentum_pool=3)
+    res = run_backtest(panel, c, start=dates[280], core_shares=shares)
+    assert set(res.core_holdings) == {"RISE"}
+    # Sans le momentum : la plus grande capitalisation.
+    res = run_backtest(panel, cfg(core_size=1), start=dates[280], core_shares=shares)
+    assert set(res.core_holdings) == {"BIG1"}
+
+
+@pytest.mark.parametrize("market_trend, expect_core", [(-1, False), (1, True)])
+def test_absolute_momentum_moves_largest_stocks_to_cash_when_the_market_fell(market_trend,
+                                                                              expect_core):
+    panel = momentum_panel()
+    dates = panel["Close"].index
+    shares = pd.Series({"BIG1": 30.0, "BIG2": 25.0})
+    market = pd.Series(100 + market_trend * np.linspace(0, 30, len(dates)), index=dates)
+    c = cfg(core_size=2, core_abs_momentum_months=12)
+    res = run_backtest(panel, c, start=dates[280], market_close=market, core_shares=shares)
+    assert (res.equity["core"].max() > 0) == expect_core
+    assert (res.equity["cash"] >= -1e-6).all()
+
+
+def test_absolute_momentum_requires_index_prices():
+    with pytest.raises(ValueError, match="momentum absolu"):
+        run_backtest(momentum_panel(40), cfg(core_size=2, core_abs_momentum_months=12),
+                     core_shares=pd.Series({"BIG1": 30.0}))
+
+
 def test_default_reserves_half_of_the_portfolio_for_largest_stocks():
     defaults = StrategyConfig()
     assert (defaults.core_size, defaults.core_min_pct) == (10, 0.5)

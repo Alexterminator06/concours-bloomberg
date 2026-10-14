@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from .backtest import compute_signals, market_is_bullish, run_backtest
+from .backtest import (compute_signals, lookback_rows, market_is_bullish, market_is_falling,
+                       run_backtest)
 from .config import StrategyConfig
 from .data import download_ohlcv, fx_tickers, load_ohlcv, to_usd
 from .metrics import (aligned_prices, benchmark_equity, performance_stats, relative_stats,
@@ -71,6 +72,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"part du portefeuille réservée aux grandes valeurs (défaut "
                         f"{defaults.core_min_pct:g} ; 0 = seulement le cash que les achats RSI "
                         f"n'utilisent pas)")
+    s.add_argument("--core-abs-momentum", type=int, default=defaults.core_abs_momentum_months,
+                   metavar="MOIS",
+                   help="momentum absolu : chaque mois, grandes valeurs en cash si l'indice "
+                        "principal a baissé sur ce nombre de mois (ex. 12 ; 0 = désactivé)")
+    s.add_argument("--core-rel-momentum", type=int, default=defaults.core_rel_momentum_months,
+                   metavar="MOIS",
+                   help="momentum relatif : chaque mois, grandes valeurs choisies parmi les "
+                        "--core-momentum-pool plus grandes, celles qui ont le plus monté sur ce "
+                        "nombre de mois hors dernier mois (ex. 12 ; 0 = les plus grandes)")
+    s.add_argument("--core-momentum-pool", type=int, default=defaults.core_momentum_pool,
+                   metavar="N", help="candidates du momentum relatif : les N plus grandes "
+                                     f"capitalisations (défaut {defaults.core_momentum_pool})")
     s.add_argument("--take-profit-first", action="store_true",
                    help="si stop et objectif sont touchés la même séance, retenir l'objectif "
                         "(hypothèse optimiste ; par défaut on retient le stop)")
@@ -102,7 +115,8 @@ def config_from_args(args) -> StrategyConfig:
         trend_ma_days=args.trend_filter, market_ma_days=args.market_filter,
         stop_loss_pct=args.stop_loss, take_profit_pct=args.take_profit,
         take_profit_bull_pct=args.take_profit_bull, core_size=args.core_size,
-        core_min_pct=args.core_min,
+        core_min_pct=args.core_min, core_abs_momentum_months=args.core_abs_momentum,
+        core_rel_momentum_months=args.core_rel_momentum, core_momentum_pool=args.core_momentum_pool,
         stop_first_if_ambiguous=not args.take_profit_first,
         commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
         benchmarks=args.benchmarks,
@@ -191,13 +205,65 @@ def _us_symbols(wls: pd.DataFrame | None) -> list[str] | None:
 
 
 def _core_label(cfg: StrategyConfig) -> str:
-    if cfg.core_min_pct:
-        return f"au moins {cfg.core_min_pct:.0%} du portefeuille et le cash restant"
-    return "cash restant"
+    share = (f"au moins {cfg.core_min_pct:.0%} du portefeuille et le cash restant"
+             if cfg.core_min_pct else "cash restant")
+    if cfg.core_rel_momentum_months:
+        which = (f"les {cfg.core_size} grandes valeurs au meilleur momentum "
+                 f"{cfg.core_rel_momentum_months} mois (parmi les {cfg.core_momentum_pool} plus "
+                 f"grandes du WLS)")
+    else:
+        which = f"les {cfg.core_size} plus grandes valeurs du WLS"
+    label = f"{share} dans {which}"
+    if cfg.core_abs_momentum_months:
+        label += (f", en cash quand {cfg.benchmarks[0]} a baissé sur "
+                  f"{cfg.core_abs_momentum_months} mois")
+    return label
 
 
 def _needs_market(cfg: StrategyConfig) -> bool:
-    return bool(cfg.market_ma_days or cfg.take_profit_bull_pct)
+    return bool(cfg.market_ma_days or cfg.take_profit_bull_pct or cfg.core_abs_momentum_months)
+
+
+def _warmup_days(cfg: StrategyConfig) -> int:
+    """Historique à télécharger avant la période : indicateurs et mesures de momentum."""
+    months = max(cfg.core_abs_momentum_months, cfg.core_rel_momentum_months)
+    return max(WARMUP_DAYS, 31 * months + 40)
+
+
+def _monthly_core_members(cfg: StrategyConfig, close: pd.DataFrame,
+                          market_close: pd.Series | None, largest_members: list[str],
+                          pool: list[str]) -> list[str]:
+    """Grandes valeurs à détenir ce mois-ci, comme dans le backtest : décision prise sur la
+    dernière clôture du mois qui précède la prochaine séance, donc identique tout le mois."""
+    dates = close.index
+    next_session = dates[-1] + pd.offsets.BDay(1)
+    row = int(dates.searchsorted(next_session.replace(day=1), side="left")) - 1
+    if row < 0:
+        return largest_members
+    anchor = dates[row].date()
+    if cfg.core_abs_momentum_months and market_close is not None:
+        months = cfg.core_abs_momentum_months
+        market = aligned_prices(market_close, dates).to_numpy(dtype=float)
+        start, _ = lookback_rows(dates, row, months)
+        change = f"{market[row] / market[start] - 1:+.1%}" if start >= 0 else "n.d."
+        falling = market_is_falling(market, dates, row, months)
+        print(f"Momentum absolu : {cfg.benchmarks[0]} {change} sur {months} mois au {anchor} -> "
+              + ("grandes valeurs vendues, part en cash jusqu'au mois prochain" if falling
+                 else "grandes valeurs conservées"))
+        if falling:
+            return []
+    if cfg.core_rel_momentum_months and pool:
+        months = cfg.core_rel_momentum_months
+        first, last = lookback_rows(dates, row, months, 1)
+        candidates = close[close.columns.intersection(pool)].ffill()
+        if first >= 0 and not candidates.empty:
+            perf = (candidates.iloc[last] / candidates.iloc[first] - 1).dropna()
+            members = list(perf.sort_values(ascending=False).index[:cfg.core_size])
+            print(f"Grandes valeurs du mois (momentum {months} mois hors dernier mois, parmi les "
+                  f"{len(pool)} plus grandes, au {anchor}) : "
+                  + ", ".join(f"{t} {perf[t]:+.0%}" for t in members))
+            return members
+    return largest_members
 
 
 def take_profit_label(cfg: StrategyConfig) -> str:
@@ -215,7 +281,7 @@ def cmd_backtest(args) -> None:
         core_pool = _core_pool(wls, cfg)
     if core_pool is not None:
         tickers = sorted(set(tickers) | set(core_pool["symbol"]))
-    data_start = (pd.Timestamp(args.start) - timedelta(days=WARMUP_DAYS)).date().isoformat()
+    data_start = (pd.Timestamp(args.start) - timedelta(days=_warmup_days(cfg))).date().isoformat()
     data_end = (pd.Timestamp(args.end) + timedelta(days=1)).date().isoformat()  # borne exclusive chez Yahoo
     cache = ROOT / "data" / "cache"
 
@@ -227,8 +293,8 @@ def cmd_backtest(args) -> None:
 
     market = cfg.benchmarks[0]
     if _needs_market(cfg) and market not in bench_close:
-        raise SystemExit(f"Pas de cours pour l'indice {market} (filtre de marché ou take profit "
-                         f"selon la tendance).")
+        raise SystemExit(f"Pas de cours pour l'indice {market} (filtre de marché, take profit "
+                         f"selon la tendance ou momentum absolu).")
     core_shares = None
     if core_pool is not None:
         core_shares = core_pool.set_index("symbol")["index_shares_m"]
@@ -255,13 +321,14 @@ def cmd_backtest(args) -> None:
     if core_shares is not None:
         tstats["Part moyenne en grandes valeurs"] = (result.equity["core"] / equity).mean()
         tstats["P&L grandes valeurs ($)"] = result.core_pnl
+        if cfg.core_abs_momentum_months:
+            tstats["Séances sans grandes valeurs"] = (result.equity["core"] <= 0).mean()
 
     print(f"\nPériode : {dates[0].date()} -> {dates[-1].date()} ({len(dates)} séances), "
           f"capital initial {cfg.initial_capital:,.0f} $".replace(",", " "))
     print(f"Signal : {signal_label(cfg)} · stop -{cfg.stop_loss_pct:.0%} · take profit "
           f"{take_profit_label(cfg)}"
-          + (f" · {_core_label(cfg)} dans les {cfg.core_size} plus grandes valeurs du WLS"
-             if core_shares is not None else ""))
+          + (f" · {_core_label(cfg)}" if core_shares is not None else ""))
     print_section("Performance : stratégie vs indices", format_table(perf))
     if rel:
         print_section("Stratégie relativement à chaque indice", format_table(rel))
@@ -302,18 +369,23 @@ def cmd_scan(args) -> None:
     held = [] if portfolio is None else list(portfolio.positions.index)
     bbg = {} if wls is None else dict(zip(wls["symbol"],
                                           wls["bloomberg"].str.replace(" Equity", "", regex=False)))
-    core_members, core_universe = [], []
+    core_members, core_universe, momentum_pool = [], [], []
     if cfg.core_size and wls is not None:
         core_members = list(_core_pool(wls, cfg, cfg.core_size)["symbol"])
         core_universe = list(_core_pool(wls, cfg)["symbol"])
+        if cfg.core_rel_momentum_months:
+            momentum_pool = list(_core_pool(wls, cfg, cfg.core_momentum_pool)["symbol"])
 
-    start = (date.today() - timedelta(days=WARMUP_DAYS)).isoformat()
+    start = (date.today() - timedelta(days=_warmup_days(cfg))).isoformat()
     end = (date.today() + timedelta(days=1)).isoformat()
-    panel = _load_prices(sorted(set(tickers) | set(held) | set(core_members)), wls, start, end,
-                         cache=None)
+    panel = _load_prices(sorted(set(tickers) | set(held) | set(core_members) | set(momentum_pool)),
+                         wls, start, end, cache=None)
     market_close = None
     if _needs_market(cfg):
         market_close = download_ohlcv([cfg.benchmarks[0]], start, end)["Close"].iloc[:, 0]
+    if core_members:
+        core_members = _monthly_core_members(cfg, panel["Close"], market_close, core_members,
+                                             momentum_pool)
 
     rsi_values, eligible = compute_signals(panel, cfg, market_close, _us_symbols(wls))
     last = panel["Close"].index[-1]
