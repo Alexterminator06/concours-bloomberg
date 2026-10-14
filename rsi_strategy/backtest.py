@@ -260,14 +260,17 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                  end: str | pd.Timestamp | None = None,
                  market_close: pd.Series | None = None,
                  core_shares: pd.Series | None = None,
-                 price_filter: list[str] | None = None) -> BacktestResult:
+                 price_filter: list[str] | None = None,
+                 core_no_rsi: list[str] | None = None) -> BacktestResult:
     """Simule la stratégie sur `panel` ({Open, High, Low, Close, Volume} -> DataFrame dates x tickers).
 
     Les données avant `start` servent uniquement au calcul des indicateurs (période de chauffe).
     `market_close` : cours de l'indice principal, requis pour le filtre de marché, le take profit
     adapté à la tendance et le momentum absolu des grandes valeurs. `core_shares` : titres de l'indice (en millions) des grandes valeurs
     candidates, dont les cours figurent dans `panel` ; sans elles, le cash reste en cash.
-    `price_filter` : tickers soumis au cours minimum (voir `compute_signals`).
+    `price_filter` : tickers soumis au cours minimum (voir `compute_signals`). `core_no_rsi` :
+    candidates jamais achetées par le RSI (défaut : toutes) ; les autres ne le sont pas pendant les
+    mois où elles font partie des grandes valeurs.
     """
     close = panel["Close"]
     rsi_values, eligible = compute_signals(panel, cfg, market_close, price_filter)
@@ -311,7 +314,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
     core = None
     if cfg.core_size and core_shares is not None and len(core_shares):
         core = CoreSleeve(col, core_shares, cfg.core_size, comm, slip)
-        ELIG[:, [col[t] for t in core.index_shares]] = False  # pas de signal RSI sur les grandes valeurs
+        no_rsi = core.index_shares if core_no_rsi is None else [t for t in core_no_rsi if t in col]
+        ELIG[:, [col[t] for t in no_rsi]] = False  # pas de signal RSI sur les grandes valeurs
 
     cash = cfg.initial_capital
     positions: dict[str, Position] = {}
@@ -424,7 +428,9 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
 
         # 4. Scan quotidien des nouvelles opportunités -> ordres pour demain.
         #    Le lendemain, les ordres sont exécutés dans cet ordre tant qu'il reste du cash.
-        cand = [j for j in np.flatnonzero(ELIG[i]) if tickers[j] not in positions]
+        core_now = set(core.members) if core is not None else set()
+        cand = [j for j in np.flatnonzero(ELIG[i])
+                if tickers[j] not in positions and tickers[j] not in core_now]
         cand.sort(key=lambda j: RSI[i, j])
         if cfg.max_positions is not None:
             cand = cand[:max(cfg.max_positions - len(positions), 0)]

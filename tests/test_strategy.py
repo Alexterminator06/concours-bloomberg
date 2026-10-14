@@ -335,6 +335,19 @@ def test_largest_stocks_are_ranked_with_prices_of_the_time():
     assert set(res.core_holdings) == {"RISE"}  # RISE est devenue la plus grosse en mars
 
 
+def test_extra_candidates_stay_open_to_rsi_except_while_held_as_largest_stocks():
+    panel = make_panel({"A": declining(), "B1": [100.0] * 20})
+    # A est une candidate, mais pas parmi celles exclues du RSI (core_no_rsi).
+    held = run_backtest(panel, cfg(core_size=1), core_no_rsi=["B1"],
+                        core_shares=pd.Series({"A": 1_000.0, "B1": 10.0}))
+    assert set(held.core_holdings) == {"A"}
+    assert held.trades.empty and held.open_positions.empty  # retenue ce mois-ci : pas d'achat RSI
+    free = run_backtest(panel, cfg(core_size=1), core_no_rsi=["B1"],
+                        core_shares=pd.Series({"A": 0.001, "B1": 10.0}))
+    assert set(free.core_holdings) == {"B1"}
+    assert "A" in set(free.trades["ticker"]) | set(free.open_positions["ticker"])
+
+
 def test_largest_stocks_are_sold_to_fund_rsi_buys():
     panel = make_panel({"A": declining(), "B1": [100.0] * 20, "B2": [100.0] * 20,
                         "B3": [100.0] * 20, "B4": [100.0] * 20, "B5": [100.0] * 20})

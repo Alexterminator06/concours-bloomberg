@@ -24,9 +24,10 @@ from .wls import (alternative_symbols, bloomberg_lookup, import_wls, largest, lo
                   us_small_mid_universe)
 
 ROOT = Path(__file__).resolve().parent.parent
-# Jours calendaires téléchargés avant le début pour initialiser les indicateurs
-# (RSI et moyennes mobiles jusqu'à environ 250 séances).
-WARMUP_DAYS = 400
+# Jours calendaires téléchargés avant le début pour initialiser les indicateurs (RSI et moyennes
+# mobiles jusqu'à environ 250 séances) et un momentum de 12 mois : les runs avec et sans momentum
+# demandent ainsi les mêmes cours et partagent le cache.
+WARMUP_DAYS = 31 * 12 + 40
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--core-momentum-pool", type=int, default=defaults.core_momentum_pool,
                    metavar="N", help="candidates du momentum relatif : les N plus grandes "
                                      f"capitalisations (défaut {defaults.core_momentum_pool})")
+    s.add_argument("--core-candidates", type=int, default=defaults.core_candidates, metavar="N",
+                   help="backtest : chercher chaque mois les plus grandes capitalisations de "
+                        "l'époque parmi les N plus grandes actuelles du WLS, au lieu des "
+                        f"{defaults.core_pool_size} (réduit le biais du survivant ; ex. 2000)")
     s.add_argument("--take-profit-first", action="store_true",
                    help="si stop et objectif sont touchés la même séance, retenir l'objectif "
                         "(hypothèse optimiste ; par défaut on retient le stop)")
@@ -117,6 +122,7 @@ def config_from_args(args) -> StrategyConfig:
         take_profit_bull_pct=args.take_profit_bull, core_size=args.core_size,
         core_min_pct=args.core_min, core_abs_momentum_months=args.core_abs_momentum,
         core_rel_momentum_months=args.core_rel_momentum, core_momentum_pool=args.core_momentum_pool,
+        core_candidates=args.core_candidates,
         stop_first_if_ambiguous=not args.take_profit_first,
         commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
         benchmarks=args.benchmarks,
@@ -214,6 +220,8 @@ def _core_label(cfg: StrategyConfig) -> str:
     else:
         which = f"les {cfg.core_size} plus grandes valeurs du WLS"
     label = f"{share} dans {which}"
+    if cfg.core_candidates:
+        label += f" (candidates : les {cfg.core_candidates} plus grandes actuelles)"
     if cfg.core_abs_momentum_months:
         label += (f", en cash quand {cfg.benchmarks[0]} a baissé sur "
                   f"{cfg.core_abs_momentum_months} mois")
@@ -276,9 +284,10 @@ def take_profit_label(cfg: StrategyConfig) -> str:
 def cmd_backtest(args) -> None:
     cfg = config_from_args(args)
     tickers, wls = _universe(args, cfg)
-    core_pool = None
+    core_pool, core_no_rsi = None, None
     if cfg.core_size and wls is not None:
-        core_pool = _core_pool(wls, cfg)
+        core_pool = _core_pool(wls, cfg, cfg.core_candidates or None)
+        core_no_rsi = list(_core_pool(wls, cfg)["symbol"])  # exclues du RSI, comme dans le scan
     if core_pool is not None:
         tickers = sorted(set(tickers) | set(core_pool["symbol"]))
     data_start = (pd.Timestamp(args.start) - timedelta(days=_warmup_days(cfg))).date().isoformat()
@@ -301,7 +310,7 @@ def cmd_backtest(args) -> None:
         core_shares = core_shares[core_shares.index.isin(panel["Close"].columns)]
     result = run_backtest(panel, cfg, start=args.start, end=args.end,
                           market_close=bench_close.get(market), core_shares=core_shares,
-                          price_filter=_us_symbols(wls))
+                          price_filter=_us_symbols(wls), core_no_rsi=core_no_rsi)
     equity = result.equity["equity"]
     dates = equity.index
 

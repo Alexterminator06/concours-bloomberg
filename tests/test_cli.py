@@ -264,7 +264,8 @@ def test_backtest_command_with_momentum_options(tmp_path, monkeypatch, capsys):
     cli.main(["import-wls", str(source)])
     cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
               "--core-size", "2", "--core-abs-momentum", "12", "--core-rel-momentum", "12",
-              "--core-momentum-pool", "3"])
+              "--core-momentum-pool", "3", "--core-candidates", "3"])
     out = capsys.readouterr().out
     assert "au meilleur momentum 12 mois" in out and "a baissé sur 12 mois" in out
+    assert "(candidates : les 3 plus grandes actuelles)" in out
     assert re.search(r"Séances sans grandes valeurs\s+\d+\.\d\d%", out)

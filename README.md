@@ -116,6 +116,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--core-abs-momentum MOIS` | 0 (désactivé) | momentum absolu : au début de chaque mois, si VT a baissé sur ce nombre de mois (ex. 12), les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois suivant |
 | `--core-rel-momentum MOIS` | 0 (désactivé) | momentum relatif : chaque mois, garder les `--core-size` grandes valeurs qui ont le plus monté sur ce nombre de mois (ex. 12), hors dernier mois, au lieu des plus grandes |
 | `--core-momentum-pool N` | 50 | nombre de plus grandes capitalisations parmi lesquelles le momentum relatif choisit |
+| `--core-candidates N` | 0 (les 100 plus grandes) | backtest : chercher chaque mois les plus grandes capitalisations de l'époque parmi les N plus grandes actuelles du WLS (ex. 2000), pour retrouver celles qui ne sont plus parmi les plus grandes aujourd'hui (biais du survivant) |
 | `--universe` | monde | `monde` : tous les membres du WLS ; `us` : small & mid caps américaines du WLS |
 | `--wls-file` | `data/wls_members.csv` | membres du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |

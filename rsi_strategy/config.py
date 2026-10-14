@@ -55,8 +55,13 @@ class StrategyConfig:
     # grâce aux grandes valeurs.
     core_min_pct: float = 0.5
     # Backtest : candidates (plus gros poids actuels du WLS) parmi lesquelles on retient chaque mois
-    # les `core_size` plus grandes capitalisations de l'époque.
+    # les `core_size` plus grandes capitalisations de l'époque. Ces actions n'ont jamais de signal RSI.
     core_pool_size: int = 100
+    # Backtest : élargit les candidates aux N plus gros poids actuels (0 = `core_pool_size`), pour
+    # retrouver les grandes valeurs d'hier qui ne sont plus parmi les plus grandes aujourd'hui. Les
+    # candidates au-delà de `core_pool_size` restent ouvertes au RSI, sauf le mois où elles sont
+    # retenues.
+    core_candidates: int = 0
     # Momentum absolu (0 = désactivé) : au début de chaque mois, si l'indice principal a baissé sur
     # ce nombre de mois, les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois
     # suivant.
