@@ -16,7 +16,8 @@ PCT_KEYS = {"Rendement total", "Rendement relatif", "Rendement annualisé", "Vol
             "Max drawdown", "Alpha annualisé", "Tracking error", "Taux de réussite", "Gain moyen par trade",
             "Gain moyen (gagnants)", "Perte moyenne (perdants)", "Exposition moyenne",
             "Gain moyen avant frais", "Part moyenne en grandes valeurs",
-            "Séances sans grandes valeurs"}
+            "Séances sans grandes valeurs", "Stop moyen sous le prix d'achat",
+            "Stop médian sous le prix d'achat"}
 MONEY_KEYS = {"Valeur finale ($)", "P&L total réalisé ($)", "Frais et glissement payés ($)",
               "P&L grandes valeurs ($)"}
 

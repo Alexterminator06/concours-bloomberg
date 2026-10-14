@@ -16,16 +16,16 @@ import numpy as np
 import pandas as pd
 
 from .config import StrategyConfig
-from .indicators import oversold_signal, rsi
+from .indicators import atr, oversold_signal, rsi
 
 
 TRADE_COLUMNS = ["ticker", "signal_date", "signal_rsi", "entry_date", "entry_price", "shares",
                  "exit_date", "exit_price", "exit_reason", "pnl", "return_pct", "holding_days",
-                 "costs", "ambiguous", "take_profit_pct"]
+                 "costs", "ambiguous", "take_profit_pct", "stop_loss"]
 OPEN_COLUMNS = ["ticker", "signal_date", "entry_date", "entry_price", "shares", "stop_loss",
                 "take_profit", "last_price", "unrealized_pnl"]
 ORDER_COLUMNS = ["ticker", "signal_date", "rsi", "close", "budget", "min_budget",
-                 "take_profit_pct"]
+                 "take_profit_pct", "atr"]
 
 
 @dataclass
@@ -414,6 +414,9 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
     L = panel["Low"].to_numpy(dtype=float)
     C_ffill = close.ffill().to_numpy(dtype=float)  # dernier cours connu, pour la valorisation
     RSI = rsi_values.to_numpy(dtype=float)
+    ATR = None
+    if cfg.stop_atr_mult:  # volatilité connue à la clôture du signal, pour placer le stop
+        ATR = atr(panel["High"], panel["Low"], close, cfg.atr_period).to_numpy(dtype=float)
     ELIG = eligible.to_numpy(dtype=bool, copy=True)
 
     comm = cfg.commission_bps / 1e4
@@ -488,7 +491,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
             positions[order["ticker"]] = Position(
                 ticker=order["ticker"], shares=shares, entry_date=d, entry_idx=i,
                 entry_price=fill,
-                stop=fill * (1 - cfg.stop_loss_pct),
+                stop=(fill - cfg.stop_atr_mult * order["atr"]
+                      if cfg.stop_atr_mult and order["atr"] > 0 else fill * (1 - cfg.stop_loss_pct)),
                 target=fill * (1 + tp),
                 signal_date=order["signal_date"], signal_rsi=order["rsi"], entry_fee=fee,
                 entry_slippage=shares * (fill - px_open), take_profit_pct=tp,
@@ -530,6 +534,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                 "costs": pos.entry_fee + pos.entry_slippage + fee + exit_slippage,
                 "ambiguous": ambiguous,
                 "take_profit_pct": pos.take_profit_pct,
+                "stop_loss": pos.stop,
             })
             del positions[t]
 
@@ -553,7 +558,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
         tp = cfg.take_profit_bull_pct if bullish is not None and bullish[i] else cfg.take_profit_pct
         pending = [{"ticker": tickers[j], "signal_date": d, "rsi": RSI[i, j],
                     "close": C_ffill[i, j], "budget": equity * cfg.position_size_pct,
-                    "min_budget": equity * cfg.min_position_pct, "take_profit_pct": tp}
+                    "min_budget": equity * cfg.min_position_pct, "take_profit_pct": tp,
+                    "atr": ATR[i, j] if ATR is not None else np.nan}
                    for j in cand]
 
     last = day_indices[-1]

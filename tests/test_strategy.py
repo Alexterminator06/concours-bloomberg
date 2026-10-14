@@ -525,3 +525,30 @@ def test_benchmark_uses_last_known_price_on_its_holidays():
     dates = pd.to_datetime(["2024-07-04", "2024-07-05"])  # 4 juillet : Wall Street fermée
     curve = benchmark_equity(index_prices, dates, 1_000_000)
     assert curve.tolist() == pytest.approx([1_000_000, 1_100_000])
+
+
+def test_atr_measures_daily_range_and_gaps():
+    from rsi_strategy.indicators import atr
+
+    idx = pd.bdate_range("2024-01-01", periods=30)
+    close = pd.DataFrame({"A": [100.0] * 29 + [110.0]}, index=idx)
+    high, low = close + 1, close - 1
+    values = atr(high, low, close, period=14)["A"]
+    assert values.iloc[:13].isna().all() and values.iloc[28] == pytest.approx(2.0)
+    # Gap de 100 à 110 : amplitude de la séance = 111 - 100 = 11, et non 2.
+    assert values.iloc[29] == pytest.approx(2.0 + (11.0 - 2.0) / 14)
+
+
+def test_atr_stop_sits_k_atr_below_the_entry_price():
+    from rsi_strategy.indicators import atr
+
+    panel = make_panel({"A": declining(40)})
+    expected_atr = atr(panel["High"], panel["Low"], panel["Close"], 14)["A"].iloc[SIGNAL_DAY]
+    res = run_backtest(panel, cfg(stop_atr_mult=2.0))
+    entry = pd.concat([res.trades, res.open_positions]).iloc[0]
+    assert entry["entry_date"] == panel["Close"].index[ENTRY_DAY]
+    assert entry["stop_loss"] == pytest.approx(entry["entry_price"] - 2.0 * expected_atr)
+    # Par défaut, stop à -5 %.
+    default = run_backtest(panel, cfg())
+    entry = pd.concat([default.trades, default.open_positions]).iloc[0]
+    assert entry["stop_loss"] == pytest.approx(entry["entry_price"] * 0.95)

@@ -298,8 +298,11 @@ def test_backtest_with_sector_cap_and_inverse_volatility(tmp_path, monkeypatch, 
         s: "Energy" if s == "BIG2" else "Tech" for s in symbols})
     cli.main(["import-wls", str(source)])
     cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
-              "--core-size", "2", "--core-sector-max", "1", "--core-inverse-vol"])
+              "--core-size", "2", "--core-sector-max", "1", "--core-inverse-vol", "--stop-atr", "2"])
     out = capsys.readouterr().out
+    assert "stop 2 x ATR(14) sous le prix d'achat" in out
+    assert re.search(r"Stop moyen sous le prix d'achat\s+\d+\.\d\d%", out)
+    assert "stop_loss" in pd.read_csv(tmp_path / "trades.csv").columns
     assert "1 au plus par secteur, pondérées par l'inverse de leur volatilité 63 séances" in out
     sectors = pd.read_csv(tmp_path / "data" / "secteurs.csv")
     assert set(sectors["symbol"]) == {"BIG0", "BIG1", "BIG2"}
@@ -308,10 +311,11 @@ def test_backtest_with_sector_cap_and_inverse_volatility(tmp_path, monkeypatch, 
     assert "BIG2" in daily.columns
 
 
-def test_scan_refuses_backtest_only_inverse_volatility(tmp_path, monkeypatch):
+def test_scan_refuses_backtest_only_options(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ROOT", tmp_path)
-    with pytest.raises(SystemExit, match="qu'au backtest"):
-        cli.main(["scan", "--core-inverse-vol"])
+    for option in (["--core-inverse-vol"], ["--stop-atr", "2"]):
+        with pytest.raises(SystemExit, match="qu'au backtest"):
+            cli.main(["scan", *option])
 
 
 def test_scan_caps_largest_stocks_per_sector(tmp_path, monkeypatch, capsys):

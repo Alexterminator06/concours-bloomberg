@@ -63,6 +63,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="n'acheter que si l'indice principal est au-dessus de sa moyenne mobile "
                         "N séances (ex. 200 ; 0 = désactivé)")
     s.add_argument("--stop-loss", type=float, default=defaults.stop_loss_pct)
+    s.add_argument("--stop-atr", type=float, default=defaults.stop_atr_mult, metavar="K",
+                   help=f"backtest : stop loss à K x ATR({defaults.atr_period}) sous le prix "
+                        "d'achat, ATR mesuré à la clôture du signal, au lieu de --stop-loss "
+                        "(0 = désactivé)")
     s.add_argument("--take-profit", type=float, default=defaults.take_profit_pct)
     s.add_argument("--take-profit-bull", type=float, default=defaults.take_profit_bull_pct,
                    help="take profit quand l'indice principal est au-dessus de sa moyenne "
@@ -129,6 +133,7 @@ def config_from_args(args) -> StrategyConfig:
         rsi_threshold=args.rsi_threshold, consecutive_days=args.days,
         trend_ma_days=args.trend_filter, market_ma_days=args.market_filter,
         stop_loss_pct=args.stop_loss, take_profit_pct=args.take_profit,
+        stop_atr_mult=args.stop_atr,
         take_profit_bull_pct=args.take_profit_bull, core_size=args.core_size,
         core_min_pct=args.core_min, core_abs_momentum_months=args.core_abs_momentum,
         core_rel_momentum_months=args.core_rel_momentum, core_momentum_pool=args.core_momentum_pool,
@@ -308,6 +313,12 @@ def _monthly_core_members(cfg: StrategyConfig, close: pd.DataFrame,
     return pick_by_sector(largest_members, cfg.core_size, sectors, cfg.core_sector_max)
 
 
+def stop_label(cfg: StrategyConfig) -> str:
+    if cfg.stop_atr_mult:
+        return f"{cfg.stop_atr_mult:g} x ATR({cfg.atr_period}) sous le prix d'achat"
+    return f"-{cfg.stop_loss_pct:.0%}"
+
+
 def take_profit_label(cfg: StrategyConfig) -> str:
     if not cfg.take_profit_bull_pct:
         return f"+{cfg.take_profit_pct:.0%}"
@@ -370,6 +381,10 @@ def cmd_backtest(args) -> None:
     rel = {n: relative_stats(equity, curves[n]) for n in names[1:]}
     tstats = trade_stats(result.trades)
     tstats["Exposition moyenne"] = (result.equity["invested"] / equity).mean()
+    if cfg.stop_atr_mult and not result.trades.empty:
+        gap = 1 - result.trades["stop_loss"] / result.trades["entry_price"]
+        tstats["Stop moyen sous le prix d'achat"] = gap.mean()
+        tstats["Stop médian sous le prix d'achat"] = gap.median()
     if core_shares is not None:
         tstats["Part moyenne en grandes valeurs"] = (result.equity["core"] / equity).mean()
         tstats["P&L grandes valeurs ($)"] = result.core_pnl
@@ -378,7 +393,7 @@ def cmd_backtest(args) -> None:
 
     print(f"\nPériode : {dates[0].date()} -> {dates[-1].date()} ({len(dates)} séances), "
           f"capital initial {cfg.initial_capital:,.0f} $".replace(",", " "))
-    print(f"Signal : {signal_label(cfg)} · stop -{cfg.stop_loss_pct:.0%} · take profit "
+    print(f"Signal : {signal_label(cfg)} · stop {stop_label(cfg)} · take profit "
           f"{take_profit_label(cfg)}"
           + (f" · {_core_label(cfg)}" if core_shares is not None else ""))
     print_section("Performance : stratégie vs indices", format_table(perf))
@@ -435,8 +450,9 @@ def _money(value: float, signed: bool = False) -> str:
 
 def cmd_scan(args) -> None:
     cfg = config_from_args(args)
-    if cfg.core_inverse_vol:
-        raise SystemExit("--core-inverse-vol ne sert pour l'instant qu'au backtest.")
+    if cfg.core_inverse_vol or cfg.stop_atr_mult:
+        raise SystemExit("--core-inverse-vol et --stop-atr ne servent pour l'instant qu'au "
+                         "backtest.")
     tickers, wls = _universe(args, cfg)
     portfolio = None
     if args.portfolio_file.exists():

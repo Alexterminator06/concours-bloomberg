@@ -34,6 +34,11 @@ class StrategyConfig:
     # --- Sorties (en % du prix d'entrée) ---
     stop_loss_pct: float = 0.05
     take_profit_pct: float = 0.05
+    # Stop selon la volatilité (0 = désactivé, stop à `stop_loss_pct`) : prix d'achat moins ce
+    # multiple de l'ATR sur `atr_period` séances, mesuré à la clôture du signal. Backtest seulement
+    # pour l'instant.
+    stop_atr_mult: float = 0.0
+    atr_period: int = 14
     # Take profit adapté à la tendance (0 = désactivé, toujours `take_profit_pct`) : si, au moment
     # du signal, l'indice principal (VT, proche du WLS) est au-dessus de sa moyenne mobile
     # `bull_ma_days` séances, l'objectif passe à `take_profit_bull_pct`. Désactivé : avec 10 %,

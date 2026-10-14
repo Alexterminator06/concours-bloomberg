@@ -116,6 +116,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--trend-filter N` | 200 | n'acheter que si l'action est au-dessus de sa moyenne mobile N séances (0 = désactivé) |
 | `--market-filter N` | 0 (désactivé) | n'acheter que si l'indice principal est au-dessus de sa moyenne mobile N séances (ex. 200) |
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
+| `--stop-atr K` | 0 (désactivé) | backtest : stop loss à K × ATR(14) sous le prix d'achat (ATR = amplitude moyenne d'une séance, gaps compris, mesurée à la clôture du signal), au lieu du pourcentage de `--stop-loss` |
 | `--take-profit-bull` | 0 (désactivé) | take profit quand VT est au-dessus de sa moyenne 200 séances (ex. 0.10) |
 | `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
 | `--core-min` | 0.5 | part du portefeuille réservée aux grandes valeurs ; les achats RSI n'utilisent que le reste (0 = seulement le cash restant) |

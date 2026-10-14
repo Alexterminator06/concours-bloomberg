@@ -1,5 +1,6 @@
 """Indicateurs techniques."""
 
+import numpy as np
 import pandas as pd
 
 
@@ -20,6 +21,18 @@ def rsi(close: pd.DataFrame | pd.Series, period: int = 14) -> pd.DataFrame | pd.
     out = out.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
     out = out.mask((avg_loss == 0) & (avg_gain == 0), 50.0)
     return out
+
+
+def atr(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame,
+        period: int = 14) -> pd.DataFrame:
+    """Average True Range de Wilder : moyenne (alpha = 1/period) de l'amplitude de chaque séance,
+    plus haut - plus bas, élargie aux écarts avec la clôture de la veille (gaps). Dans l'unité des
+    cours ; les séances sans cotation ne comptent pas."""
+    prev = close.ffill().shift(1)
+    true_range = np.fmax(np.fmax(high - low, (high - prev).abs()), (low - prev).abs())
+    true_range = true_range.where(high.notna() & low.notna())
+    return true_range.ewm(alpha=1.0 / period, adjust=False, min_periods=period,
+                          ignore_na=True).mean().ffill()
 
 
 def oversold_signal(rsi_values: pd.DataFrame, threshold: float = 30.0, days: int = 2) -> pd.DataFrame:
