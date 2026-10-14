@@ -353,6 +353,11 @@ def cmd_backtest(args) -> None:
             table = pd.concat([table.head(5), table.tail(5)])
         print_section("Grandes valeurs : P&L par action (liste complète dans grandes_valeurs.csv)",
                       table)
+    daily = result.core_daily_pnl
+    if daily is not None and not daily.empty:
+        print_section("Grandes valeurs : plus fortes variations d'une séance "
+                      "(détail dans grandes_valeurs_jour.csv)",
+                      _largest_core_moves(daily, equity, cfg.initial_capital))
     if not result.open_positions.empty:
         print_section("Positions ouvertes en fin de période",
                       result.open_positions.set_index("ticker").round(
@@ -362,14 +367,31 @@ def cmd_backtest(args) -> None:
     save_csv(args.out, trades=result.trades, open_positions=result.open_positions,
              equity_curve=curves, next_orders=result.next_orders,
              summary=format_table({**perf, **{f"vs {k}": v for k, v in rel.items()}}).reset_index(),
-             **({"grandes_valeurs": core_summary} if core_summary is not None else {}))
+             **({"grandes_valeurs": core_summary} if core_summary is not None else {}),
+             **({"grandes_valeurs_jour": daily} if daily is not None else {}))
     plot_performance(curves, args.out / "performance.png",
                      f"Stratégie {signal_label(cfg)} – small & mid caps vs indices")
     print(f"\nRésultats enregistrés dans {args.out}/")
 
 
-def _money(value: float) -> str:
-    return f"{value:,.0f}".replace(",", " ")
+def _largest_core_moves(daily: pd.DataFrame, equity: pd.Series, capital: float,
+                        n: int = 8) -> pd.DataFrame:
+    """Les `n` séances où les grandes valeurs ont le plus varié, en dollars et en part du
+    portefeuille de la veille, avec l'action qui y a le plus contribué."""
+    total = daily.sum(axis=1)
+    before = equity.shift(1).fillna(capital)
+    rows = {}
+    for d in total.abs().nlargest(n).index.sort_values():
+        main = daily.loc[d].abs().idxmax()
+        rows[d.date()] = {"P&L grandes valeurs": _money(total[d], signed=True),
+                          "portefeuille": f"{total[d] / before[d]:+.1%}",
+                          "principale": main,
+                          "P&L principale": _money(daily.loc[d, main], signed=True)}
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def _money(value: float, signed: bool = False) -> str:
+    return f"{value:{'+' if signed else ''},.0f}".replace(",", " ")
 
 
 def cmd_scan(args) -> None:

@@ -53,6 +53,7 @@ class BacktestResult:
     core_pnl: float = 0.0         # gain des grandes valeurs ($), réalisé et latent
     core_holdings: dict | None = None  # grandes valeurs détenues à la fin : ticker -> titres
     core_summary: pd.DataFrame | None = None  # par grande valeur : mois retenue, P&L ($)
+    core_daily_pnl: pd.DataFrame | None = None  # P&L de chaque grande valeur par séance ($)
 
 
 def compute_signals(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
@@ -235,6 +236,15 @@ class CoreSleeve:
         return pd.DataFrame(rows, columns=["ticker", "mois_retenue", "premier_mois", "dernier_mois",
                                            "pnl_usd"]).sort_values("pnl_usd", ascending=False)
 
+    def cumulative_pnl(self, prices: np.ndarray) -> dict[str, float]:
+        """P&L réalisé et latent de chaque grande valeur détenue un jour, depuis le début."""
+        pnl = {}
+        for t, flow in self.flows.items():
+            price = self._price(t, prices)
+            held = self.holdings.get(t, 0) * price if np.isfinite(price) else 0.0
+            pnl[t] = flow + held
+        return pnl
+
     def raise_cash(self, amount: float, prices: np.ndarray) -> float:
         """Vend des grandes valeurs, des plus grosses lignes aux plus petites, pour obtenir au
         moins `amount` ; renvoie le cash obtenu."""
@@ -335,7 +345,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
     cash = cfg.initial_capital
     positions: dict[str, Position] = {}
     pending: list[dict] = []
-    trades, records = [], []
+    trades, records, core_pnl_rows = [], [], []
 
     for i in day_indices:
         d = dates[i]
@@ -436,6 +446,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
 
         # 3. Valorisation à la clôture.
         core_value = core.value(C_ffill[i]) if core is not None else 0.0
+        if core is not None:
+            core_pnl_rows.append({"date": d, **core.cumulative_pnl(C_ffill[i])})
         invested = sum(pos.shares * C_ffill[i, col[t]] for t, pos in positions.items())
         equity = cash + invested + core_value
         records.append({"date": d, "cash": cash, "invested": invested + core_value,
@@ -474,4 +486,11 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
         core_pnl=core.cash_flow + core.value(C_ffill[last]) if core is not None else 0.0,
         core_holdings=dict(core.holdings) if core is not None else None,
         core_summary=core.summary(C_ffill[last]) if core is not None else None,
+        core_daily_pnl=_daily_pnl(core_pnl_rows) if core is not None else None,
     )
+
+
+def _daily_pnl(rows: list[dict]) -> pd.DataFrame:
+    """P&L cumulé de chaque grande valeur à chaque séance -> P&L de la séance."""
+    cumulative = pd.DataFrame(rows).set_index("date").ffill().fillna(0.0)
+    return cumulative.diff().fillna(cumulative).round(0)

@@ -403,6 +403,9 @@ def test_accounting_with_largest_stocks_on_random_walks():
     summary = res.core_summary
     assert summary["pnl_usd"].sum() == pytest.approx(res.core_pnl, abs=len(summary))  # arrondis
     assert set(summary["ticker"]) <= set(shares.index) and (summary["mois_retenue"] > 0).all()
+    daily = res.core_daily_pnl  # P&L de chaque séance, arrondi au dollar
+    assert daily.to_numpy().sum() == pytest.approx(res.core_pnl, abs=daily.size)
+    assert list(daily.index) == list(eq.index)
 
 
 def test_reserved_share_of_largest_stocks_limits_rsi_buys():

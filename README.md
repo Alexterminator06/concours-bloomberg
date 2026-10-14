@@ -152,6 +152,7 @@ Le backtest affiche dans la console et écrit dans `results/` :
 - `open_positions.csv` : positions encore ouvertes en fin de période, avec leurs niveaux de stop et d'objectif ;
 - `next_orders.csv` : ordres à passer à l'ouverture suivante ;
 - `grandes_valeurs.csv` : chaque grande valeur détenue, avec le nombre de mois où elle a été retenue, le premier et le dernier de ces mois et son P&L réalisé et latent.
+- `grandes_valeurs_jour.csv` : P&L de chaque grande valeur à chaque séance ; la console affiche les 8 séances où les grandes valeurs ont le plus varié, avec l'action qui y a le plus contribué.
 
 ## Diagnostiquer la performance
 
