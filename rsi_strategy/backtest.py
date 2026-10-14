@@ -134,6 +134,14 @@ def market_is_falling(market: np.ndarray, dates: pd.DatetimeIndex, row: int, mon
     return bool(start >= 0 and market[row] <= market[start])
 
 
+# La capitalisation passée d'une candidate est estimée avec ses titres actuels. Après une émission
+# massive d'actions, que Yahoo n'ajuste pas comme une division (LATAM en 2022 : environ 1 000 fois
+# plus de titres), l'estimation devient absurde : on ignore la candidate tant qu'elle dépasse ce
+# multiple de sa capitalisation actuelle. Une vraie baisse de 98 % d'une action encore au-dessus de
+# 10 Md$ supposerait plus de 500 Md$ avant.
+MAX_PAST_CAP_RATIO = 50
+
+
 class CoreSleeve:
     """Grandes valeurs détenues avec le cash que les achats RSI n'utilisent pas.
 
@@ -146,9 +154,12 @@ class CoreSleeve:
     """
 
     def __init__(self, col: dict[str, int], index_shares: pd.Series, size: int,
-                 comm: float, slip: float):
+                 comm: float, slip: float, caps_now: pd.Series | None = None):
         self.col, self.size, self.comm, self.slip = col, size, comm, slip
         self.index_shares = {t: float(n) for t, n in index_shares.items() if t in col}
+        caps_now = pd.Series(dtype=float) if caps_now is None else caps_now
+        self.max_caps = {t: MAX_PAST_CAP_RATIO * float(c) for t, c in caps_now.items()
+                         if t in self.index_shares and np.isfinite(c) and c > 0}
         self.members: list[str] = []
         self.holdings: dict[str, int] = {}
         self.cash_flow = 0.0  # ventes - achats : P&L = cash_flow + valeur détenue
@@ -165,6 +176,7 @@ class CoreSleeve:
         qui ont le plus monté ; sinon, les `size` plus grandes."""
         caps = {t: n * self._price(t, prices) for t, n in self.index_shares.items()
                 if np.isfinite(self._price(t, prices))}
+        caps = {t: c for t, c in caps.items() if c <= self.max_caps.get(t, math.inf)}
         ranked = sorted(caps, key=caps.get, reverse=True)
         if start_prices is not None and end_prices is not None:
             momentum = {}
@@ -261,7 +273,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                  market_close: pd.Series | None = None,
                  core_shares: pd.Series | None = None,
                  price_filter: list[str] | None = None,
-                 core_no_rsi: list[str] | None = None) -> BacktestResult:
+                 core_no_rsi: list[str] | None = None,
+                 core_caps_now: pd.Series | None = None) -> BacktestResult:
     """Simule la stratégie sur `panel` ({Open, High, Low, Close, Volume} -> DataFrame dates x tickers).
 
     Les données avant `start` servent uniquement au calcul des indicateurs (période de chauffe).
@@ -270,7 +283,9 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
     candidates, dont les cours figurent dans `panel` ; sans elles, le cash reste en cash.
     `price_filter` : tickers soumis au cours minimum (voir `compute_signals`). `core_no_rsi` :
     candidates jamais achetées par le RSI (défaut : toutes) ; les autres ne le sont pas pendant les
-    mois où elles font partie des grandes valeurs.
+    mois où elles font partie des grandes valeurs. `core_caps_now` : capitalisations actuelles des
+    candidates, dans l'unité de `core_shares` x cours, pour écarter les estimations passées
+    absurdes (voir `MAX_PAST_CAP_RATIO`).
     """
     close = panel["Close"]
     rsi_values, eligible = compute_signals(panel, cfg, market_close, price_filter)
@@ -313,7 +328,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
 
     core = None
     if cfg.core_size and core_shares is not None and len(core_shares):
-        core = CoreSleeve(col, core_shares, cfg.core_size, comm, slip)
+        core = CoreSleeve(col, core_shares, cfg.core_size, comm, slip, core_caps_now)
         no_rsi = core.index_shares if core_no_rsi is None else [t for t in core_no_rsi if t in col]
         ELIG[:, [col[t] for t in no_rsi]] = False  # pas de signal RSI sur les grandes valeurs
 

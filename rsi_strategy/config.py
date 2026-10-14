@@ -58,18 +58,20 @@ class StrategyConfig:
     # les `core_size` plus grandes capitalisations de l'époque. Ces actions n'ont jamais de signal RSI.
     core_pool_size: int = 100
     # Backtest : élargit les candidates aux N plus gros poids actuels (0 = `core_pool_size`), pour
-    # retrouver les grandes valeurs d'hier qui ne sont plus parmi les plus grandes aujourd'hui. Les
-    # candidates au-delà de `core_pool_size` restent ouvertes au RSI, sauf le mois où elles sont
-    # retenues.
-    core_candidates: int = 0
+    # retrouver les grandes valeurs d'hier qui ne sont plus parmi les plus grandes aujourd'hui
+    # (biais du survivant). Les candidates au-delà de `core_pool_size` restent ouvertes au RSI, sauf
+    # le mois où elles sont retenues.
+    core_candidates: int = 2000
     # Momentum absolu (0 = désactivé) : au début de chaque mois, si l'indice principal a baissé sur
     # ce nombre de mois, les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois
     # suivant.
     core_abs_momentum_months: int = 0
     # Momentum relatif (0 = désactivé) : au début de chaque mois, parmi les `core_momentum_pool`
     # plus grandes capitalisations, on retient les `core_size` qui ont le plus monté sur ce nombre
-    # de mois, en ignorant le dernier mois, au lieu des `core_size` plus grandes.
-    core_rel_momentum_months: int = 0
+    # de mois, en ignorant le dernier mois, au lieu des `core_size` plus grandes. 12 mois parmi les
+    # 50 plus grandes : bat les 10 plus grandes sur 2019-2023 et sur 2023-2026, aussi avec 2000
+    # candidates (+60 et +98 points face à VT, contre +40 et +69).
+    core_rel_momentum_months: int = 12
     core_momentum_pool: int = 50
 
     # --- Coûts de transaction (aucun dans le concours Bloomberg) ---

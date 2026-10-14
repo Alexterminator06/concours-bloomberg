@@ -35,7 +35,8 @@ def cfg(**kw) -> StrategyConfig:
     # sans filtre de tendance), qui se déclenche sur une simple baisse continue.
     base = dict(commission_bps=0.0, slippage_bps=0.0, min_avg_dollar_volume=0.0,
                 avg_volume_window=1, rsi_period=14, rsi_threshold=30.0, consecutive_days=2,
-                trend_ma_days=0, take_profit_bull_pct=0.0, core_size=0)
+                trend_ma_days=0, take_profit_bull_pct=0.0, core_size=0,
+                core_rel_momentum_months=0)
     base.update(kw)
     return StrategyConfig(**base)
 
@@ -348,6 +349,19 @@ def test_extra_candidates_stay_open_to_rsi_except_while_held_as_largest_stocks()
     assert "A" in set(free.trades["ticker"]) | set(free.open_positions["ticker"])
 
 
+def test_past_caps_inflated_by_a_massive_share_issue_are_ignored():
+    # Comme LATAM en 2022 : 1 000 fois plus de titres, cours d'avant non ajustés. Avec les titres
+    # actuels, DIL paraît valoir 100 000 en janvier, alors qu'elle ne vaut que 100 aujourd'hui.
+    n = 60
+    panel = core_panel(n, DIL=[100.0] * 30 + [0.1] * (n - 30))
+    shares = pd.Series({"BIG1": 30.0, "BIG2": 20.0, "DIL": 1_000.0})
+    naive = run_backtest(panel, cfg(core_size=1), core_shares=shares)
+    assert "DIL" in set(naive.core_summary["ticker"])
+    caps_now = pd.Series({"BIG1": 3_000.0, "BIG2": 2_000.0, "DIL": 100.0})
+    res = run_backtest(panel, cfg(core_size=1), core_shares=shares, core_caps_now=caps_now)
+    assert set(res.core_summary["ticker"]) == {"BIG1"}
+
+
 def test_largest_stocks_are_sold_to_fund_rsi_buys():
     panel = make_panel({"A": declining(), "B1": [100.0] * 20, "B2": [100.0] * 20,
                         "B3": [100.0] * 20, "B4": [100.0] * 20, "B5": [100.0] * 20})
@@ -459,6 +473,10 @@ def test_default_reserves_half_of_the_portfolio_for_largest_stocks():
     defaults = StrategyConfig()
     assert (defaults.core_size, defaults.core_min_pct) == (10, 0.5)
     assert defaults.take_profit_bull_pct == 0  # take profit fixe à 5 %
+    # Grandes valeurs au meilleur momentum 12 mois parmi les 50 plus grandes, sans momentum absolu ;
+    # backtest sur 2000 candidates.
+    assert (defaults.core_rel_momentum_months, defaults.core_momentum_pool) == (12, 50)
+    assert (defaults.core_abs_momentum_months, defaults.core_candidates) == (0, 2000)
 
 
 def test_benchmark_uses_last_known_price_on_its_holidays():

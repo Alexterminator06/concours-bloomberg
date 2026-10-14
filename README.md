@@ -4,8 +4,9 @@ Stratégie de retour à la moyenne, positions longues uniquement :
 parmi les quelque 10 000 actions de l'indice WLS (l'indice du concours Bloomberg), on achète
 celles en tendance haussière qui viennent de subir un repli brutal (RSI(2) sous 10), avec un stop
 loss et un take profit à 5 %. Au moins la moitié du portefeuille, plus le cash que les achats RSI
-n'utilisent pas, est placée dans les 10 plus grandes valeurs du WLS, pour suivre le marché. Les
-cours viennent de Yahoo Finance (via `yfinance`) et sont convertis en dollars.
+n'utilisent pas, est placée dans 10 grandes valeurs du WLS : chaque mois, celles qui ont le plus
+monté sur 12 mois parmi les 50 plus grandes (momentum). Les cours viennent de Yahoo Finance (via
+`yfinance`) et sont convertis en dollars.
 
 ## Règles
 
@@ -16,7 +17,7 @@ cours viennent de Yahoo Finance (via `yfinance`) et sont convertis en dollars.
 | Fréquence | **Un scan par jour**, après la clôture. L'achat se fait à l'ouverture de la séance suivante, ce qui évite tout biais d'anticipation. |
 | Stop loss | **-5 %** par rapport au prix d'achat. |
 | Take profit | **+5 %** par rapport au prix d'achat. Un objectif relevé à +10 % quand le marché est en tendance haussière existe en option (`--take-profit-bull 0.10`), mais il fait moins bien dans les backtests (voir plus bas). |
-| Grandes valeurs | **Au moins 50 % du portefeuille**, plus le cash que les achats RSI n'utilisent pas, dans les **10 plus grandes capitalisations du WLS** (une catégorie d'actions par société), à parts à peu près égales, sans stop ni take profit. Les achats RSI n'utilisent donc que l'autre moitié ; au-delà des 50 %, les grandes valeurs sont vendues en priorité, en partant des plus grosses lignes, pour les financer. `--core-min 0` revient à placer seulement le cash restant (0,2 à 1,4 % du portefeuille en moyenne). |
+| Grandes valeurs | **Au moins 50 % du portefeuille**, plus le cash que les achats RSI n'utilisent pas, dans **10 grandes valeurs du WLS choisies chaque mois par momentum** : parmi les 50 plus grandes capitalisations (une catégorie d'actions par société), les 10 qui ont le plus monté sur 12 mois, sans compter le dernier mois. Elles sont détenues à parts à peu près égales, sans stop ni take profit. `--core-rel-momentum 0` revient aux 10 plus grandes capitalisations. Les achats RSI n'utilisent donc que l'autre moitié ; au-delà des 50 %, les grandes valeurs sont vendues en priorité, en partant des plus grosses lignes, pour les financer. `--core-min 0` revient à placer seulement le cash restant (0,2 à 1,4 % du portefeuille en moyenne). |
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
 | Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
@@ -77,12 +78,16 @@ python -m rsi_strategy scan
    (séparateur `;` et virgule décimale acceptés). Il n'est pas envoyé sur GitHub.
 2. **Lancez le scan** : `python -m rsi_strategy scan`. Il affiche la valeur du portefeuille, le
    poids de chaque position, puis les **ordres de l'ouverture, dans l'ordre où les passer** :
-   1. les ventes de grandes valeurs, pour financer les achats RSI ;
+   1. les ventes de grandes valeurs : celles qui sortent de la sélection du mois, et de quoi
+      financer les achats RSI ;
    2. les achats RSI, du RSI le plus bas au plus haut, 20 % maximum de la valeur totale chacun,
       dans la limite de la moitié du portefeuille ;
    3. les achats de grandes valeurs, pour qu'elles pèsent au moins 50 % du portefeuille, avec le
-      cash restant. Le premier scan après ce changement achète donc d'un coup les 10 grandes
-      valeurs.
+      cash restant.
+
+   Le scan affiche aussi la sélection du mois, avec la hausse sur 12 mois de chaque grande valeur.
+   Elle ne change qu'au début de chaque mois ; le premier scan avec le momentum remplace d'un coup
+   les grandes valeurs détenues qui n'en font pas partie.
 
    Chaque ordre indique le ticker Bloomberg à saisir sur la plateforme. Cours et montants sont en
    dollars. Les quantités prévoient une marge de 2 %, au cas où les cours d'ouverture
@@ -114,9 +119,9 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
 | `--core-min` | 0.5 | part du portefeuille réservée aux grandes valeurs ; les achats RSI n'utilisent que le reste (0 = seulement le cash restant) |
 | `--core-abs-momentum MOIS` | 0 (désactivé) | momentum absolu : au début de chaque mois, si VT a baissé sur ce nombre de mois (ex. 12), les grandes valeurs sont vendues et leur part reste en cash jusqu'au mois suivant |
-| `--core-rel-momentum MOIS` | 0 (désactivé) | momentum relatif : chaque mois, garder les `--core-size` grandes valeurs qui ont le plus monté sur ce nombre de mois (ex. 12), hors dernier mois, au lieu des plus grandes |
+| `--core-rel-momentum MOIS` | 12 | momentum relatif : chaque mois, garder les `--core-size` grandes valeurs qui ont le plus monté sur ce nombre de mois, hors dernier mois, parmi les `--core-momentum-pool` plus grandes (0 = les plus grandes capitalisations) |
 | `--core-momentum-pool N` | 50 | nombre de plus grandes capitalisations parmi lesquelles le momentum relatif choisit |
-| `--core-candidates N` | 0 (les 100 plus grandes) | backtest : chercher chaque mois les plus grandes capitalisations de l'époque parmi les N plus grandes actuelles du WLS (ex. 2000), pour retrouver celles qui ne sont plus parmi les plus grandes aujourd'hui (biais du survivant) |
+| `--core-candidates N` | 2000 | backtest : chercher chaque mois les plus grandes capitalisations de l'époque parmi les N plus grandes actuelles du WLS, pour retrouver celles qui ne sont plus parmi les plus grandes aujourd'hui (biais du survivant ; 0 = les 100 plus grandes) |
 | `--universe` | monde | `monde` : tous les membres du WLS ; `us` : small & mid caps américaines du WLS |
 | `--wls-file` | `data/wls_members.csv` | membres du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
@@ -238,22 +243,67 @@ de cours au-delà des plafonds de variation chinois et taïwanais) et un achat p
 suspension de cotation (Mesoblast, août 2023), d'où les valeurs corrigées. Pour rejouer ces runs :
 
 ```bash
-python -m rsi_strategy backtest --out results/monde_gv50
-python -m rsi_strategy backtest --universe us --out results/us_gv50
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_monde_gv50
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --universe us --out results/oos_us_gv50
+python -m rsi_strategy backtest --core-rel-momentum 0 --core-candidates 0 --out results/monde_gv50
+python -m rsi_strategy backtest --core-rel-momentum 0 --core-candidates 0 --universe us --out results/us_gv50
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-rel-momentum 0 --core-candidates 0 --out results/oos_monde_gv50
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-rel-momentum 0 --core-candidates 0 --universe us --out results/oos_us_gv50
 ```
 
-Dans le backtest, les grandes valeurs sont choisies chaque mois parmi les 100 plus gros membres
-actuels du WLS, d'après leur capitalisation **à l'époque** (titres de l'indice aujourd'hui × cours
-de la veille). Les choisir d'après leur taille actuelle reviendrait à acheter en 2019 les gagnantes
-connues en 2026.
+Dans le backtest, les grandes valeurs sont choisies chaque mois d'après leur capitalisation **à
+l'époque** (titres de l'indice aujourd'hui × cours de la veille), parmi les 2000 plus gros membres
+actuels du WLS. Les choisir d'après leur taille actuelle reviendrait à acheter en 2019 les
+gagnantes connues en 2026 ; se limiter aux 100 plus grandes actuelles oublierait les grandes
+valeurs d'hier qui ont reculé depuis. Une candidate est ignorée quand sa capitalisation estimée
+dépasse 50 fois sa capitalisation actuelle : c'est le signe d'une émission massive d'actions que
+Yahoo n'ajuste pas (LATAM, restructurée en 2022, paraissait sinon valoir des milliers de
+milliards de dollars en 2019).
+
+### Momentum des grandes valeurs
+
+Pour limiter les chutes alignées sur celles du marché, deux règles de momentum ont été testées sur
+les grandes valeurs, sur l'univers mondial, avec la règle fixée avant les tests : garder une
+variante seulement si elle fait mieux que les 10 plus grandes sur les deux périodes.
+
+| Face à VT (drawdown max) | 2019-2023 | 2023-2026 |
+|---|---|---|
+| 10 plus grandes (100 candidates) | +42 pts (-28 %) | +68 pts (-20 %) |
+| Momentum absolu (en cash quand VT a baissé sur 12 mois) | -6 pts (-24 %) | +69 pts (-20 %) |
+| Momentum relatif parmi les 50 plus grandes (100 candidates) | +63 pts (-27 %) | +115 pts (-19 %) |
+| Momentum relatif parmi les 20 plus grandes (100 candidates) | +32 pts (-27 %) | +72 pts (-20 %) |
+| 10 plus grandes (2000 candidates) | +40 pts (-30 %) | +69 pts (-20 %) |
+| **Momentum relatif parmi les 50 plus grandes (2000 candidates, défaut)** | **+60 pts** (-27 %) | **+98 pts** (-19 %) |
+
+- **Momentum absolu, rejeté** : VT n'a jamais baissé sur 12 mois entre 2023 et 2026, et sur
+  2019-2023 le signal arrive trop tard, après les baisses, et fait rater des reprises (début 2019,
+  avril 2020). Les grandes valeurs restent en cash 35 % du temps et ne rapportent que 0,30 M$,
+  contre 0,70 M$.
+- **Momentum relatif, retenu** : avec les 100 plus grandes actuelles comme candidates, on pouvait
+  craindre un biais du survivant. Avec 2000 candidates, les anciennes géantes qui ont reculé
+  reviennent dans la course (Pfizer, par exemple) : l'avance baisse un peu sur 2019-2023 (de +63 à
+  +60 pts) et davantage sur 2023-2026 (de +115 à +98 pts), mais reste de 20 à 30 points au-dessus
+  des 10 plus grandes sur les deux périodes, avec un drawdown un peu plus faible. Tesla, Nvidia et
+  Eli Lilly, les plus gros gains de 2019-2023, sont retenues aux mêmes dates avec 2000 candidates :
+  elles comptaient bien parmi les 50 plus grandes de l'époque.
+- **Limites** : l'avance dépend de la largeur du choix (parmi les 20 plus grandes seulement, le
+  momentum fait moins bien sur 2019-2023), la volatilité monte de 15 à 19 % sur 2023-2026, et les
+  gains viennent de quelques valeurs : Tesla, Nvidia et Eli Lilly sur 2019-2023, Micron, AMD, SK
+  Hynix et Samsung sur 2023-2026. En octobre 2026, au moins 5 des 10 grandes valeurs retenues sont
+  des semi-conducteurs (Micron, AMD, SK Hynix, Samsung, Intel) : un retournement du secteur
+  toucherait une grande partie de cette moitié du portefeuille.
+
+```bash
+python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --out results/monde_rel_c2000
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_monde_rel_c2000
+python -m rsi_strategy backtest --start 2023-10-14 --end 2026-10-14 --core-rel-momentum 0 --out results/monde_c2000
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-rel-momentum 0 --out results/oos_monde_c2000
+```
 
 ## Limites
 
 - **Biais du survivant** : l'univers correspond aux membres *d'aujourd'hui* du WLS. Les sociétés
   disparues (faillites, rachats) ou passées en large cap entre-temps n'y figurent pas, ce qui
-  tend à flatter le backtest.
+  tend à flatter le backtest. Pour les grandes valeurs, les 2000 candidates limitent ce biais, mais
+  les géantes rachetées ou retirées de la cote manquent toujours.
 - **Données journalières** : l'ordre de passage du stop et de l'objectif dans une même séance est
   inconnu. Le cas est traité de façon prudente (voir plus haut).
 - **VT et le WLS** : le WLS ne compte pas les dividendes, alors que VT est comparé dividendes

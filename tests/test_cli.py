@@ -146,7 +146,8 @@ def test_import_wls_keeps_all_recognised_members(tmp_path, monkeypatch, capsys):
 
 def test_scan_places_leftover_cash_in_largest_stocks(tmp_path, monkeypatch, capsys):
     run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD,1000,400\n",
-             wls_text=WLS_EXPORT, extra_args=["--core-size", "2", "--core-min", "0"])
+             wls_text=WLS_EXPORT, extra_args=["--core-size", "2", "--core-min", "0",
+                                              "--core-rel-momentum", "0"])
     out = capsys.readouterr().out
     assert "Univers : 3 actions membres du WLS, toutes places et tailles" in out
     orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
@@ -167,7 +168,10 @@ def test_scan_reserves_half_of_the_portfolio_for_largest_stocks_by_default(tmp_p
     core = orders.loc[orders["type"] != "RSI", "montant_estime_usd"].sum()
     assert held + rsi <= 0.5 * equity  # les achats RSI n'utilisent que l'autre moitié
     assert "SOFT" not in set(orders["ticker"])  # achetée sans part réservée (test précédent)
-    assert set(orders.loc[orders["type"] != "RSI", "ticker"]) == {"BIG1", "BIG2"}
+    # Par défaut, les 2 grandes valeurs au meilleur momentum 12 mois, parmi les plus grandes.
+    assert "Grandes valeurs du mois (momentum 12 mois" in capsys.readouterr().out
+    bought = orders.loc[orders["type"] != "RSI", "ticker"]
+    assert len(bought) == 2 and set(bought) <= {"BIG1", "BIG2", "7203.T"}
     assert core >= 2 * 0.19 * equity  # chacune au plafond de 20 % par position
 
 

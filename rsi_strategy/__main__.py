@@ -81,14 +81,16 @@ def build_parser() -> argparse.ArgumentParser:
                    metavar="MOIS",
                    help="momentum relatif : chaque mois, grandes valeurs choisies parmi les "
                         "--core-momentum-pool plus grandes, celles qui ont le plus monté sur ce "
-                        "nombre de mois hors dernier mois (ex. 12 ; 0 = les plus grandes)")
+                        f"nombre de mois hors dernier mois (défaut {defaults.core_rel_momentum_months}"
+                        " ; 0 = les plus grandes)")
     s.add_argument("--core-momentum-pool", type=int, default=defaults.core_momentum_pool,
                    metavar="N", help="candidates du momentum relatif : les N plus grandes "
                                      f"capitalisations (défaut {defaults.core_momentum_pool})")
     s.add_argument("--core-candidates", type=int, default=defaults.core_candidates, metavar="N",
                    help="backtest : chercher chaque mois les plus grandes capitalisations de "
-                        "l'époque parmi les N plus grandes actuelles du WLS, au lieu des "
-                        f"{defaults.core_pool_size} (réduit le biais du survivant ; ex. 2000)")
+                        "l'époque parmi les N plus grandes actuelles du WLS (défaut "
+                        f"{defaults.core_candidates}, pour réduire le biais du survivant ; 0 = les "
+                        f"{defaults.core_pool_size} plus grandes)")
     s.add_argument("--take-profit-first", action="store_true",
                    help="si stop et objectif sont touchés la même séance, retenir l'objectif "
                         "(hypothèse optimiste ; par défaut on retient le stop)")
@@ -304,13 +306,15 @@ def cmd_backtest(args) -> None:
     if _needs_market(cfg) and market not in bench_close:
         raise SystemExit(f"Pas de cours pour l'indice {market} (filtre de marché, take profit "
                          f"selon la tendance ou momentum absolu).")
-    core_shares = None
+    core_shares, core_caps_now = None, None
     if core_pool is not None:
         core_shares = core_pool.set_index("symbol")["index_shares_m"]
         core_shares = core_shares[core_shares.index.isin(panel["Close"].columns)]
+        core_caps_now = core_pool.set_index("symbol")["mcap_usd"] / 1e6  # comme titres (M) x cours
     result = run_backtest(panel, cfg, start=args.start, end=args.end,
                           market_close=bench_close.get(market), core_shares=core_shares,
-                          price_filter=_us_symbols(wls), core_no_rsi=core_no_rsi)
+                          price_filter=_us_symbols(wls), core_no_rsi=core_no_rsi,
+                          core_caps_now=core_caps_now)
     equity = result.equity["equity"]
     dates = equity.index
 
