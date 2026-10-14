@@ -11,11 +11,8 @@ FIELDS = ["Open", "High", "Low", "Close", "Volume"]
 MAX_CACHE_FILES = 4  # fichiers de cache conservés (les plus récemment utilisés), ~90 Mo chacun
 
 
-def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
-                   chunk_size: int = 200) -> dict[str, pd.DataFrame]:
-    """Télécharge les cours ajustés (splits + dividendes) et renvoie un dict
-    {champ: DataFrame dates x tickers} pour les champs Open, High, Low, Close, Volume.
-    """
+def _download_chunks(tickers: list[str], start: str, end: str | None,
+                     chunk_size: int) -> dict[str, list[pd.DataFrame]]:
     import yfinance as yf
 
     # yfinance affiche une erreur par action sans cours sur la période (introductions en bourse
@@ -40,6 +37,25 @@ def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
                 frames[f].append(part)
     finally:
         yf_logger.setLevel(previous_level)
+    return frames
+
+
+def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
+                   chunk_size: int = 200,
+                   alternatives: dict[str, list[str]] | None = None) -> dict[str, pd.DataFrame]:
+    """Télécharge les cours ajustés (splits + dividendes) et renvoie un dict
+    {champ: DataFrame dates x tickers} pour les champs Open, High, Low, Close, Volume, en devise
+    de cotation. `alternatives` : autres symboles Yahoo à essayer pour un ticker sans cours ; les
+    cours trouvés sont rangés sous le ticker d'origine.
+    """
+    frames = _download_chunks(tickers, start, end, chunk_size)
+    found = {t for part in frames["Close"] for t in part.columns[part.notna().any()]}
+    retry = {alt: t for t in tickers if t not in found for alt in (alternatives or {}).get(t, [])}
+    if retry:
+        print(f"  Nouvel essai pour {len(set(retry.values()))} action(s) sous une autre écriture :")
+        extra = _download_chunks(list(retry), start, end, chunk_size)
+        for f in FIELDS:
+            frames[f] += [part.rename(columns=retry) for part in extra[f]]
 
     if not frames["Close"]:
         raise RuntimeError("Aucune donnée téléchargée depuis Yahoo Finance.")
@@ -47,6 +63,7 @@ def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
     panel = {}
     for f in FIELDS:
         df = pd.concat(frames[f], axis=1)
+        df = df.loc[:, df.notna().any()]  # une écriture sans cours ne masque pas celle qui en a
         df = df.loc[:, ~df.columns.duplicated()]
         df.index = pd.to_datetime(df.index).tz_localize(None)
         panel[f] = df.sort_index()
@@ -55,14 +72,51 @@ def download_ohlcv(tickers: list[str], start: str, end: str | None = None,
     valid_cols = panel["Close"].columns[panel["Close"].notna().any()]
     missing = len(set(tickers) - set(valid_cols))
     if missing:
-        print(f"  {missing} action(s) sans cours sur la période (cotées plus tard ou retirées "
-              f"de la cote) : ignorées.")
+        print(f"  {missing} action(s) sans cours sur la période (cotées plus tard, retirées de la "
+              f"cote ou introuvables sur Yahoo) : ignorées.")
     valid_rows = panel["Close"].index[panel["Close"].notna().any(axis=1)]
-    return {f: df.loc[valid_rows, valid_cols] for f, df in panel.items()}
+    # float32 : deux fois moins de mémoire et de disque pour 10 000 actions, précision suffisante.
+    return {f: df.reindex(columns=valid_cols).loc[valid_rows].astype("float32")
+            for f, df in panel.items()}
+
+
+def fx_tickers(currencies) -> dict[str, str]:
+    """Devise -> symbole Yahoo du cours du dollar dans cette devise (« JPY » -> « JPY=X »)."""
+    return {c: f"{c}=X" for c in sorted(set(currencies)) if c != "USD"}
+
+
+def to_usd(panel: dict[str, pd.DataFrame], currency: pd.Series, unit: pd.Series,
+           fx_close: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Convertit les cours (Open, High, Low, Close) en dollars.
+
+    `currency` / `unit` : devise et unité de cotation de chaque ticker (0.01 pour les pence) ;
+    `fx_close` : cours du dollar dans chaque devise (colonnes « JPY=X »...), au jour le jour.
+    Les tickers dont la devise n'a pas de cours de change sont écartés.
+    """
+    close = panel["Close"]
+    fx = fx_close.reindex(close.index).ffill().bfill()
+    fx["USD=X"] = 1.0
+    rate_column = pd.Series([f"{currency.get(t, 'USD')}=X" for t in close.columns],
+                            index=close.columns)
+    available = {c for c in fx.columns if fx[c].notna().any()}
+    keep = rate_column.index[rate_column.isin(available)]
+    if len(keep) < len(close.columns):
+        print(f"  {len(close.columns) - len(keep)} action(s) sans taux de change disponible : "
+              f"ignorées.")
+    factor = (unit.reindex(keep).fillna(1.0).to_numpy()
+              / fx[rate_column[keep]].to_numpy())  # unité de cotation -> dollars, jour par jour
+    out = {}
+    for f, df in panel.items():
+        values = df[keep].to_numpy(dtype="float64")
+        if f != "Volume":
+            values = values * factor
+        out[f] = pd.DataFrame(values.astype("float32"), index=df.index, columns=keep)
+    return out
 
 
 def load_ohlcv(tickers: list[str], start: str, end: str | None, cache_dir: Path,
-               refresh: bool = False) -> dict[str, pd.DataFrame]:
+               refresh: bool = False,
+               alternatives: dict[str, list[str]] | None = None) -> dict[str, pd.DataFrame]:
     """Comme `download_ohlcv`, mais réutilise un cache pickle pour la même requête."""
     key = hashlib.md5(f"{sorted(tickers)}|{start}|{end}".encode()).hexdigest()[:12]
     path = cache_dir / f"ohlcv_{key}.pkl"
@@ -74,7 +128,7 @@ def load_ohlcv(tickers: list[str], start: str, end: str | None, cache_dir: Path,
         except Exception:
             print(f"  Cache illisible ({path.name}) : nouveau téléchargement.")
             path.unlink(missing_ok=True)
-    panel = download_ohlcv(tickers, start, end)
+    panel = download_ohlcv(tickers, start, end, alternatives=alternatives)
     _write_cache(panel, path)
     return panel
 

@@ -1,22 +1,22 @@
-# Stratégie RSI – small & mid caps US
+# Stratégie RSI – actions mondiales du WLS
 
 Stratégie de retour à la moyenne, positions longues uniquement :
-on achète les small et mid caps US en tendance haussière qui viennent de subir un repli brutal
-(RSI(2) sous 10), avec un stop loss et un take profit à 5 %. Le cash que les achats RSI
-n'utilisent pas est placé dans les 10 plus grandes valeurs US. La performance est comparée au WLS,
-l'indice du concours Bloomberg. Les cours viennent de Yahoo Finance (via
-`yfinance`).
+parmi les quelque 10 000 actions de l'indice WLS (l'indice du concours Bloomberg), on achète
+celles en tendance haussière qui viennent de subir un repli brutal (RSI(2) sous 10), avec un stop
+loss et un take profit à 5 %. Le cash que les achats RSI n'utilisent pas est placé dans les 10
+plus grandes valeurs du WLS. Les cours viennent de Yahoo Finance (via `yfinance`) et sont
+convertis en dollars.
 
 ## Règles
 
 | Élément | Règle |
 |---|---|
-| Univers | **Small & mid caps US membres du WLS** : actions cotées aux États-Unis dont la capitalisation retenue par l'indice va de **300 M$ à 10 Md$** (small caps 300 M–2 Md$, mid caps 2–10 Md$). Seuls les membres du WLS sont autorisés dans le concours ; la liste s'importe depuis Bloomberg (voir plus bas). Sans elle, l'univers vient du screener Yahoo Finance (cours > 5 $, volume moyen sur 3 mois > 100 000 titres). |
+| Univers | **Tous les membres du WLS**, toutes places et toutes tailles (seuls les membres du WLS sont autorisés dans le concours) : environ 10 350 actions sur 49 places et en 36 devises, sauf les 100 plus grandes, réservées au cash restant. La liste s'importe depuis Bloomberg (voir plus bas). Les tickers Bloomberg sont convertis en symboles Yahoo et les cours en dollars ; les actions que Yahoo ne connaît pas sont ignorées (voir les limites). `--universe us` restreint aux small & mid caps américaines du WLS (capitalisation de 300 M$ à 10 Md$). Sans liste WLS, l'univers vient du screener Yahoo Finance (small & mid caps US). |
 | Signal d'achat | **RSI(2) < 10** à la clôture, et cours **au-dessus de sa moyenne mobile 200 séances** (RSI de Wilder, calculé sur les cours de clôture ajustés). La règle d'origine, RSI(14) < 30 sur 2 séances consécutives sans filtre de tendance, reste disponible : `--rsi-period 14 --rsi-threshold 30 --days 2 --trend-filter 0`. |
 | Fréquence | **Un scan par jour**, après la clôture. L'achat se fait à l'ouverture de la séance suivante, ce qui évite tout biais d'anticipation. |
 | Stop loss | **-5 %** par rapport au prix d'achat. |
 | Take profit | **+5 %** par rapport au prix d'achat. Un objectif relevé à +10 % quand le marché est en tendance haussière existe en option (`--take-profit-bull 0.10`), mais il fait moins bien dans les backtests (voir plus bas). |
-| Cash restant | Le cash que les achats RSI n'utilisent pas est placé dans les **10 plus grandes capitalisations US du WLS** (une catégorie d'actions par société), à parts à peu près égales, sans stop ni take profit. Elles sont vendues en priorité, en partant des plus grosses lignes, pour financer les achats RSI. En pratique, elles pèsent en moyenne 0,2 à 1,4 % du portefeuille. Une part réservée est possible en option (`--core-min 0.5`). |
+| Cash restant | Le cash que les achats RSI n'utilisent pas est placé dans les **10 plus grandes capitalisations du WLS** (une catégorie d'actions par société), à parts à peu près égales, sans stop ni take profit. Elles sont vendues en priorité, en partant des plus grosses lignes, pour financer les achats RSI. En pratique, elles pèsent en moyenne 0,2 à 1,4 % du portefeuille. Une part réservée est possible en option (`--core-min 0.5`). |
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
 | Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
@@ -27,7 +27,8 @@ Hypothèses du backtest. Elles portent sur des points que l'énoncé ne précisa
 - **Gap à l'ouverture** : si le cours ouvre déjà sous le stop (ou au-dessus de l'objectif), la position est vendue au cours d'ouverture.
 - **Stop et objectif touchés la même séance** : les données journalières ne disent pas lequel est venu en premier. Par prudence, on retient le stop.
 - **Coûts** : aucun par défaut, car le concours Bloomberg ne facture pas de frais de transaction. On peut simuler une commission et un glissement avec `--commission-bps` et `--slippage-bps`. Le glissement s'applique aux achats et aux stops ; le take profit est un ordre limite, donc sans glissement.
-- **Liquidité** : au moment du signal, on exige un cours ≥ 5 $ et un volume moyen sur 20 séances ≥ 1 M$ par jour.
+- **Liquidité** : au moment du signal, on exige un volume moyen sur 20 séances ≥ 1 M$ par jour, et un cours ≥ 5 $ pour les actions américaines (ailleurs, un cours bas en devise locale n'indique pas une action marginale).
+- **Bourses du monde** : chaque bourse a ses jours fériés. Les indicateurs sont calculés sur le dernier cours connu, et un signal n'est retenu que si l'action a coté ce jour-là. Un ordre est annulé si sa bourse est fermée le lendemain.
 
 ## Installation
 
@@ -57,7 +58,8 @@ python -m rsi_strategy scan
    python -m rsi_strategy import-wls "chemin/vers/WLS_as_of_Oct_13_2026.xlsx"
    ```
 
-   Les membres US sont enregistrés dans `data/wls_members.csv` (non envoyé sur GitHub).
+   Les membres sont enregistrés dans `data/wls_members.csv` (non envoyé sur GitHub). Si la liste
+   a été importée avec une version antérieure (membres US seulement), réimportez-la.
 1. **Chaque soir, après la clôture US** (22h, heure de Paris), mettez à jour `portefeuille.csv`
    avec vos positions et votre cash, tels qu'affichés par la plateforme du concours. Partez du
    modèle `portefeuille.exemple.csv` :
@@ -66,10 +68,12 @@ python -m rsi_strategy scan
    ticker,quantite,prix_achat
    CASH,612500,
    KFY,2800,71.02
-   MOV,6400,31.33
+   7203 JT,3000,2984
    ```
 
-   La ligne `CASH` donne le cash disponible. Le fichier peut aussi être enregistré depuis Excel
+   La ligne `CASH` donne le cash disponible, en dollars. Les tickers peuvent être recopiés tels que
+   la plateforme les affiche (`7203 JT` ou `7203 JT Equity`) ou au format Yahoo (`7203.T`). Le prix
+   d'achat est en devise de cotation ; il ne sert qu'à afficher le niveau du stop. Le fichier peut aussi être enregistré depuis Excel
    (séparateur `;` et virgule décimale acceptés). Il n'est pas envoyé sur GitHub.
 2. **Lancez le scan** : `python -m rsi_strategy scan`. Il affiche la valeur du portefeuille, le
    poids de chaque position, puis les **ordres de l'ouverture, dans l'ordre où les passer** :
@@ -77,9 +81,13 @@ python -m rsi_strategy scan
    2. les achats RSI, du RSI le plus bas au plus haut, 20 % maximum de la valeur totale chacun ;
    3. les achats de grandes valeurs avec le cash restant.
 
-   Les quantités prévoient une marge de 2 %, au cas où les cours d'ouverture s'écarteraient de la
-   dernière clôture. Les ordres sont aussi enregistrés dans `results/ordres_<date>.csv`.
-3. **À l'ouverture suivante**, passez ces ordres au marché, dans l'ordre affiché.
+   Chaque ordre indique le ticker Bloomberg à saisir sur la plateforme. Cours et montants sont en
+   dollars. Les quantités prévoient une marge de 2 %, au cas où les cours d'ouverture
+   s'écarteraient de la dernière clôture. Les ordres sont aussi enregistrés dans
+   `results/ordres_<date>.csv`.
+3. **Passez ces ordres au marché**, dans l'ordre affiché : ils s'exécutent à l'ouverture de leur
+   bourse. Les places asiatiques ouvrent dans la nuit (heure de Paris), l'Europe à 9h et
+   Wall Street à 15h30.
 4. **Dès qu'un achat RSI est exécuté**, placez sur la plateforme un stop loss à -5 % et un take
    profit à +5 % du prix d'exécution. Les ventes RSI se font ensuite toutes seules. Les grandes
    valeurs n'ont ni stop ni take profit.
@@ -102,7 +110,8 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--take-profit-bull` | 0 (désactivé) | take profit quand VT est au-dessus de sa moyenne 200 séances (ex. 0.10) |
 | `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
 | `--core-min` | 0 | part du portefeuille réservée aux grandes valeurs, ex. 0.5 : les achats RSI n'utilisent que le reste |
-| `--wls-file` | `data/wls_members.csv` | membres US du WLS, créés par `import-wls` |
+| `--universe` | monde | `monde` : tous les membres du WLS ; `us` : small & mid caps américaines du WLS |
+| `--wls-file` | `data/wls_members.csv` | membres du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
 | `--commission-bps` / `--slippage-bps` | 0 / 0 | coûts de transaction, en points de base (1 pb = 0,01 %) |
 | `--benchmarks` | VT SMMD IWM | ETF de comparaison (le premier est l'indice principal) |
@@ -197,6 +206,16 @@ parie en partie sur les grandes valeurs américaines, qui ont dominé le marché
 2026. Rien ne garantit que cela continue. Ce n'est pas le réglage par défaut : la stratégie reste
 centrée sur les signaux RSI.
 
+Tous ces backtests portent sur des actions américaines. L'univers mondial (tous les membres du WLS,
+défaut actuel) n'a pas encore été testé ; pour le comparer à l'univers américain :
+
+```bash
+python -m rsi_strategy backtest --out results/monde
+python -m rsi_strategy backtest --universe us --out results/us
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --out results/oos_monde
+python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --universe us --out results/oos_us
+```
+
 Dans le backtest, les grandes valeurs sont choisies chaque mois parmi les 100 plus gros membres
 actuels du WLS, d'après leur capitalisation **à l'époque** (titres de l'indice aujourd'hui × cours
 de la veille). Les choisir d'après leur taille actuelle reviendrait à acheter en 2019 les gagnantes
@@ -204,7 +223,7 @@ connues en 2026.
 
 ## Limites
 
-- **Biais du survivant** : l'univers correspond aux small et mid caps *d'aujourd'hui*. Les sociétés
+- **Biais du survivant** : l'univers correspond aux membres *d'aujourd'hui* du WLS. Les sociétés
   disparues (faillites, rachats) ou passées en large cap entre-temps n'y figurent pas, ce qui
   tend à flatter le backtest.
 - **Données journalières** : l'ordre de passage du stop et de l'objectif dans une même séance est
@@ -215,6 +234,16 @@ connues en 2026.
 - **Actions autorisées** : le concours n'accepte que les actions membres du WLS. Importez la liste
   (`import-wls`) pour que l'univers s'y limite ; sans elle, vérifiez chaque action sur le terminal.
   La composition change au fil du temps : réimportez une liste récente si besoin.
+- **Couverture de Yahoo** : pour l'Inde, Singapour, l'Arabie saoudite, la Malaisie ou le Chili,
+  Bloomberg utilise ses propres abréviations (« HDFCB » pour HDFC Bank) que Yahoo ne connaît pas ;
+  la plupart de ces actions sont ignorées, ainsi que les places de Dubaï, Abou Dhabi et Bahreïn.
+  Le nombre d'actions ignorées s'affiche à chaque téléchargement.
+- **Devises et lots** : les cours sont convertis en dollars au taux de clôture du jour, ce qui
+  ajoute le risque de change aux positions étrangères. Certaines places imposent des lots
+  (100 actions au Japon, en Chine…) : arrondissez si la plateforme les exige.
+- **Volume de données** : télécharger 10 000 actions prend nettement plus de temps qu'avant
+  (plusieurs minutes par backtest sans cache, et pour chaque scan quotidien) ; le cache d'une
+  période pèse environ 250 Mo.
 - **SMMD** n'existe que depuis juillet 2017. Pour un backtest antérieur, utiliser par exemple
   `--benchmarks VT IWM`.
 

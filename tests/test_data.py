@@ -12,7 +12,7 @@ from rsi_strategy import data
 def fake_download(monkeypatch):
     calls = []
 
-    def download(tickers, start, end):
+    def download(tickers, start, end, **kw):
         calls.append(tickers)
         idx = pd.bdate_range(start, periods=3)
         return {f: pd.DataFrame(1.0, index=idx, columns=tickers) for f in data.FIELDS}

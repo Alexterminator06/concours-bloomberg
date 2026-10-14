@@ -13,12 +13,13 @@ import pandas as pd
 
 from .backtest import compute_signals, market_is_bullish, run_backtest
 from .config import StrategyConfig
-from .data import download_ohlcv, load_ohlcv
+from .data import download_ohlcv, fx_tickers, load_ohlcv, to_usd
 from .metrics import benchmark_equity, performance_stats, relative_stats, trade_stats
 from .portfolio import load_portfolio, plan_orders
 from .report import format_table, plot_performance, print_section, save_csv
 from .universe import load_universe
-from .wls import import_wls, largest, load_wls, small_mid_universe
+from .wls import (alternative_symbols, bloomberg_lookup, import_wls, largest, load_wls,
+                  us_small_mid_universe)
 
 ROOT = Path(__file__).resolve().parent.parent
 # Jours calendaires téléchargés avant le début pour initialiser les indicateurs
@@ -31,7 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     g = common.add_argument_group("univers et données")
     g.add_argument("--wls-file", type=Path, default=ROOT / "data" / "wls_members.csv",
-                   help="membres US du WLS (créé par import-wls) : univers et grandes valeurs")
+                   help="membres du WLS (créé par import-wls) : univers et grandes valeurs")
+    g.add_argument("--universe", choices=["monde", "us"], default="monde",
+                   help="monde : tous les membres du WLS (défaut) ; us : small & mid caps "
+                        "américaines du WLS")
     g.add_argument("--universe-file", type=Path, default=ROOT / "data" / "universe.csv",
                    help="univers Yahoo, utilisé seulement sans liste WLS")
     g.add_argument("--refresh-universe", action="store_true",
@@ -116,10 +120,21 @@ def signal_label(cfg: StrategyConfig) -> str:
 
 
 def _universe(args, cfg: StrategyConfig) -> tuple[list[str], pd.DataFrame | None]:
-    """Tickers small & mid caps de la stratégie, et membres US du WLS s'ils ont été importés."""
-    wls = load_wls(args.wls_file)
-    if wls is not None:
-        universe = small_mid_universe(wls, cfg.min_market_cap, cfg.max_market_cap)
+    """Tickers où chercher les signaux RSI, et membres du WLS s'ils ont été importés."""
+    try:
+        wls = load_wls(args.wls_file)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    if wls is not None and args.universe == "monde":
+        universe = wls
+        if cfg.core_size:  # les grandes valeurs servent au cash restant, pas aux signaux RSI
+            universe = wls[~wls["symbol"].isin(_core_pool(wls, cfg)["symbol"])]
+        if args.max_tickers:
+            universe = universe.head(args.max_tickers)
+        print(f"Univers : {len(universe)} actions membres du WLS, toutes places et tailles "
+              f"({args.wls_file})")
+    elif wls is not None:
+        universe = us_small_mid_universe(wls, cfg.min_market_cap, cfg.max_market_cap)
         if args.max_tickers:
             universe = universe.head(args.max_tickers)
         print(f"Univers : {len(universe)} small & mid caps US membres du WLS ({args.wls_file})")
@@ -132,6 +147,45 @@ def _universe(args, cfg: StrategyConfig) -> tuple[list[str], pd.DataFrame | None
     if cfg.core_size and wls is None:
         print("  ! Grandes valeurs désactivées : elles demandent la liste du WLS (import-wls).")
     return [t for t in universe["symbol"].astype(str) if t not in cfg.benchmarks], wls
+
+
+def _core_pool(wls: pd.DataFrame, cfg: StrategyConfig, size: int | None = None) -> pd.DataFrame:
+    """Plus grandes valeurs du WLS (au-dessus de la limite des mid caps)."""
+    return largest(wls, size or cfg.core_pool_size, above=cfg.max_market_cap)
+
+
+def _load_prices(tickers: list[str], wls: pd.DataFrame | None, start: str, end: str,
+                 cache: Path | None, refresh: bool = False) -> dict[str, pd.DataFrame]:
+    """Cours des tickers, convertis en dollars. Avec `cache` : cache disque (backtest) ;
+    sans : téléchargement direct (scan quotidien)."""
+    alternatives = None
+    if wls is not None:
+        info = wls.set_index("symbol")
+        alternatives = {t: alt for t in tickers if t in info.index
+                        for alt in [alternative_symbols(t, info.at[t, "exchange"])] if alt}
+
+    def load(symbols, alts=None):
+        if cache is None:
+            return download_ohlcv(symbols, start, end, alternatives=alts)
+        return load_ohlcv(symbols, start, end, cache, refresh=refresh, alternatives=alts)
+
+    panel = load(tickers, alternatives)
+    if wls is None:
+        return panel
+    info = wls.set_index("symbol").reindex(panel["Close"].columns)
+    currency = info["currency"].fillna("USD")
+    fx_symbols = fx_tickers(currency)
+    if not fx_symbols:
+        return panel
+    print(f"Taux de change ({len(fx_symbols)} devises) :")
+    fx_close = load(list(fx_symbols.values()))["Close"]
+    return to_usd(panel, currency, info["unit"].fillna(1.0), fx_close)
+
+
+def _us_symbols(wls: pd.DataFrame | None) -> list[str] | None:
+    """Tickers américains, seuls soumis au cours minimum (les autres places cotent en devise
+    locale, où un cours bas n'indique pas une action marginale)."""
+    return None if wls is None else list(wls.loc[wls["currency"] == "USD", "symbol"])
 
 
 def _core_label(cfg: StrategyConfig) -> str:
@@ -156,7 +210,7 @@ def cmd_backtest(args) -> None:
     tickers, wls = _universe(args, cfg)
     core_pool = None
     if cfg.core_size and wls is not None:
-        core_pool = largest(wls, cfg.core_pool_size, above=cfg.max_market_cap)
+        core_pool = _core_pool(wls, cfg)
     if core_pool is not None:
         tickers = sorted(set(tickers) | set(core_pool["symbol"]))
     data_start = (pd.Timestamp(args.start) - timedelta(days=WARMUP_DAYS)).date().isoformat()
@@ -164,7 +218,7 @@ def cmd_backtest(args) -> None:
     cache = ROOT / "data" / "cache"
 
     print("Cours des actions :")
-    panel = load_ohlcv(tickers, data_start, data_end, cache, refresh=args.refresh_data)
+    panel = _load_prices(tickers, wls, data_start, data_end, cache, refresh=args.refresh_data)
     print("Cours des indices :")
     bench_close = load_ohlcv(cfg.benchmarks, data_start, data_end, cache,
                              refresh=args.refresh_data)["Close"]
@@ -178,7 +232,8 @@ def cmd_backtest(args) -> None:
         core_shares = core_pool.set_index("symbol")["index_shares_m"]
         core_shares = core_shares[core_shares.index.isin(panel["Close"].columns)]
     result = run_backtest(panel, cfg, start=args.start, end=args.end,
-                          market_close=bench_close.get(market), core_shares=core_shares)
+                          market_close=bench_close.get(market), core_shares=core_shares,
+                          price_filter=_us_symbols(wls))
     equity = result.equity["equity"]
     dates = equity.index
 
@@ -236,22 +291,29 @@ def cmd_scan(args) -> None:
             portfolio = load_portfolio(args.portfolio_file)
         except ValueError as exc:
             raise SystemExit(f"Erreur dans le portefeuille : {exc}")
+        if wls is not None:  # tickers recopiés de la plateforme : « 7203 JT » -> « 7203.T »
+            lookup = bloomberg_lookup(wls)
+            portfolio.positions.index = [lookup.get(t.replace(" EQUITY", "").strip(), t)
+                                         for t in portfolio.positions.index]
         print(f"Portefeuille : {args.portfolio_file.name} ({len(portfolio.positions)} position(s), "
               f"cash {_money(portfolio.cash)} $)")
     held = [] if portfolio is None else list(portfolio.positions.index)
+    bbg = {} if wls is None else dict(zip(wls["symbol"],
+                                          wls["bloomberg"].str.replace(" Equity", "", regex=False)))
     core_members, core_universe = [], []
     if cfg.core_size and wls is not None:
-        core_members = list(largest(wls, cfg.core_size, above=cfg.max_market_cap)["symbol"])
-        core_universe = list(largest(wls, cfg.core_pool_size, above=cfg.max_market_cap)["symbol"])
+        core_members = list(_core_pool(wls, cfg, cfg.core_size)["symbol"])
+        core_universe = list(_core_pool(wls, cfg)["symbol"])
 
     start = (date.today() - timedelta(days=WARMUP_DAYS)).isoformat()
     end = (date.today() + timedelta(days=1)).isoformat()
-    panel = download_ohlcv(sorted(set(tickers) | set(held) | set(core_members)), start, end)
+    panel = _load_prices(sorted(set(tickers) | set(held) | set(core_members)), wls, start, end,
+                         cache=None)
     market_close = None
     if _needs_market(cfg):
         market_close = download_ohlcv([cfg.benchmarks[0]], start, end)["Close"].iloc[:, 0]
 
-    rsi_values, eligible = compute_signals(panel, cfg, market_close)
+    rsi_values, eligible = compute_signals(panel, cfg, market_close, _us_symbols(wls))
     last = panel["Close"].index[-1]
     bullish = False
     if market_close is not None:
@@ -278,7 +340,8 @@ def cmd_scan(args) -> None:
     out_dir = ROOT / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
     if portfolio is None:
-        _print_indicative_orders(signals, cfg, bullish, out_dir / f"signals_{last.date()}.csv")
+        _print_indicative_orders(signals, cfg, bullish, out_dir / f"signals_{last.date()}.csv",
+                                 bbg)
     else:
         try:
             plan = plan_orders(signals, portfolio, panel["Close"].ffill().iloc[-1], cfg,
@@ -286,11 +349,20 @@ def cmd_scan(args) -> None:
                                bullish=bullish)
         except ValueError as exc:
             raise SystemExit(f"Erreur dans le portefeuille : {exc}")
-        _print_portfolio_orders(plan, portfolio, cfg, last, out_dir / f"ordres_{last.date()}.csv")
+        _print_portfolio_orders(plan, portfolio, cfg, last, out_dir / f"ordres_{last.date()}.csv",
+                                bbg)
+
+
+def _with_bloomberg(frame: pd.DataFrame, bbg: dict[str, str]) -> pd.DataFrame:
+    """Ajoute en tête le ticker Bloomberg, à saisir sur la plateforme du concours."""
+    if not bbg:
+        return frame
+    return frame.assign(bloomberg=[bbg.get(t, "") for t in frame.index])[
+        ["bloomberg", *frame.columns]]
 
 
 def _print_indicative_orders(signals: pd.DataFrame, cfg: StrategyConfig, bullish: bool,
-                             out: Path) -> None:
+                             out: Path, bbg: dict[str, str]) -> None:
     """Sans fichier de portefeuille : signaux du jour avec un budget indicatif sur `--capital`."""
     if cfg.max_positions is not None:
         signals = signals.head(cfg.max_positions)
@@ -304,8 +376,10 @@ def _print_indicative_orders(signals: pd.DataFrame, cfg: StrategyConfig, bullish
         stop_loss_indicatif=signals["dernier_cours"] * (1 - cfg.stop_loss_pct),
         take_profit_indicatif=signals["dernier_cours"] * (1 + tp),
     ).round(2)
+    orders = _with_bloomberg(orders, bbg)
     print(orders.to_string())
-    print(f"\nBudget par position : {_money(budget)} $ ({cfg.position_size_pct:.0%} du capital). "
+    print(f"\nCours en dollars. Budget par position : {_money(budget)} $ "
+          f"({cfg.position_size_pct:.0%} du capital). "
           f"Acheter dans l'ordre du tableau (RSI le plus bas d'abord) tant qu'il reste du cash, "
           f"puis placer stop loss et take profit à -{cfg.stop_loss_pct:.0%} / +{tp:.0%} du prix "
           f"d'exécution.\n"
@@ -315,23 +389,25 @@ def _print_indicative_orders(signals: pd.DataFrame, cfg: StrategyConfig, bullish
     print(f"Enregistré dans {out}")
 
 
-def _orders_table(plan, cfg: StrategyConfig) -> pd.DataFrame:
-    """Tous les ordres de l'ouverture, dans l'ordre où les passer."""
+def _orders_table(plan, cfg: StrategyConfig, bbg: dict[str, str]) -> pd.DataFrame:
+    """Tous les ordres de l'ouverture, dans l'ordre où les passer (montants en dollars)."""
     rows = []
     for t, r in plan.core_sells.iterrows():
-        rows.append(["1. vente", t, "grande valeur", r["quantite"], r["dernier_cours"],
-                     r["montant_estime"], None, None])
+        rows.append(["1. vente", t, bbg.get(t, ""), "grande valeur", r["quantite"],
+                     r["dernier_cours"], r["montant_estime"], None, None])
     for t, r in plan.orders.iterrows():
-        rows.append(["2. achat", t, "RSI", r["quantite"], r["dernier_cours"], r["montant_estime"],
-                     -cfg.stop_loss_pct, plan.take_profit_pct])
+        rows.append(["2. achat", t, bbg.get(t, ""), "RSI", r["quantite"], r["dernier_cours"],
+                     r["montant_estime"], -cfg.stop_loss_pct, plan.take_profit_pct])
     for t, r in plan.core_buys.iterrows():
-        rows.append(["3. achat", t, "grande valeur", r["quantite"], r["dernier_cours"],
-                     r["montant_estime"], None, None])
-    return pd.DataFrame(rows, columns=["etape", "ticker", "type", "quantite", "dernier_cours",
-                                       "montant_estime", "stop_loss_pct", "take_profit_pct"])
+        rows.append(["3. achat", t, bbg.get(t, ""), "grande valeur", r["quantite"],
+                     r["dernier_cours"], r["montant_estime"], None, None])
+    return pd.DataFrame(rows, columns=["etape", "ticker", "bloomberg", "type", "quantite",
+                                       "dernier_cours_usd", "montant_estime_usd",
+                                       "stop_loss_pct", "take_profit_pct"])
 
 
-def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Path) -> None:
+def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Path,
+                            bbg: dict[str, str]) -> None:
     """Avec le fichier de portefeuille : ordres exacts à passer à l'ouverture suivante."""
     print(f"\n=== Portefeuille au {last.date()} ===")
     print(f"Valeur totale estimée : {_money(plan.equity)} $ · cash {_money(portfolio.cash)} $ "
@@ -344,7 +420,9 @@ def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Pat
         if (shown["quantite"] % 1 == 0).all():
             shown["quantite"] = shown["quantite"].astype(int)
         shown["poids"] = shown["poids"].map("{:.1%}".format)
-        print(shown.to_string())
+        shown = shown.rename(columns={"prix_achat": "prix_achat_local", "dernier_cours": "cours_usd",
+                                      "valeur": "valeur_usd", "stop_loss": "stop_loss_local"})
+        print(_with_bloomberg(shown, bbg).to_string())
     for ticker in plan.unpriced:
         print(f"  ! {ticker} : aucun cours récent trouvé, valorisé au prix d'achat.")
     for ticker, weight in plan.positions["poids"].items():
@@ -352,8 +430,8 @@ def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Pat
             print(f"  ! {ticker} pèse {weight:.1%} du portefeuille "
                   f"(limite {cfg.position_size_pct:.0%}).")
 
-    table = _orders_table(plan, cfg)
-    print("\n=== Ordres pour l'ouverture, dans cet ordre ===")
+    table = _orders_table(plan, cfg, bbg)
+    print("\n=== Ordres pour l'ouverture, dans cet ordre (cours et montants en dollars) ===")
     if table.empty:
         print("Aucun ordre : " + ("pas de nouveau signal aujourd'hui." if not plan.skipped else
               f"pas assez de cash pour une position d'au moins {cfg.min_position_pct:.0%} "
@@ -373,7 +451,7 @@ def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Pat
             if "poids_estime" in shown:
                 shown["poids_estime"] = shown["poids_estime"].map("{:.1%}".format)
             print(f"\n{number}. {title} :")
-            print(shown.to_string())
+            print(_with_bloomberg(shown, bbg).to_string())
         flows = (plan.core_sells["montant_estime"].sum() - plan.orders["montant_estime"].sum()
                  - plan.core_buys["montant_estime"].sum())
         print(f"\nCash restant estimé : {_money(portfolio.cash + flows)} $")
@@ -386,15 +464,18 @@ def _print_portfolio_orders(plan, portfolio, cfg: StrategyConfig, last, out: Pat
 
 def cmd_import_wls(args) -> None:
     try:
-        members = import_wls(args.source, args.wls_file)
+        members, raw_count = import_wls(args.source, args.wls_file)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Import impossible : {exc}")
     cfg = StrategyConfig()
-    universe = small_mid_universe(members, cfg.min_market_cap, cfg.max_market_cap)
-    biggest = ", ".join(largest(members, cfg.core_size, above=cfg.max_market_cap)["symbol"])
-    print(f"{len(members)} actions US membres du WLS enregistrées dans {args.wls_file}")
-    print(f"  dont {len(universe)} small & mid caps ({cfg.min_market_cap / 1e6:,.0f} M$ à "
-          f"{cfg.max_market_cap / 1e9:,.0f} Md$) pour les signaux RSI".replace(",", " "))
+    us = members["currency"] == "USD"
+    print(f"{len(members)} actions membres du WLS enregistrées dans {args.wls_file} "
+          f"(sur {raw_count} lignes ; places non reconnues ignorées)")
+    print(f"  dont {us.sum()} américaines et {(~us).sum()} cotées sur {members.loc[~us, 'exchange'].nunique()} "
+          f"autres places, en {members['currency'].nunique()} devises")
+    us_small_mid = us_small_mid_universe(members, cfg.min_market_cap, cfg.max_market_cap)
+    print(f"  {len(us_small_mid)} small & mid caps américaines (option --universe us)")
+    biggest = ", ".join(_core_pool(members, cfg, cfg.core_size)["symbol"])
     print(f"  {cfg.core_size} plus grandes valeurs pour le cash restant : {biggest}")
 
 

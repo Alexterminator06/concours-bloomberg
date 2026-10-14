@@ -28,7 +28,7 @@ def test_backtest_command_writes_results(tmp_path, monkeypatch, capsys):
     universe = pd.DataFrame({"symbol": [f"S{k}" for k in range(30)]})
     monkeypatch.setattr(cli, "load_universe", lambda *a, **k: universe)
     monkeypatch.setattr(cli, "load_ohlcv",
-                        lambda tickers, start, end, cache, refresh=False: fake_panel(tickers, start, end))
+                        lambda tickers, start, end, cache, refresh=False, **kw: fake_panel(tickers, start, end))
 
     cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path)])
 
@@ -46,7 +46,7 @@ def test_backtest_command_with_filters(tmp_path, monkeypatch, capsys):
     universe = pd.DataFrame({"symbol": [f"S{k}" for k in range(30)]})
     monkeypatch.setattr(cli, "load_universe", lambda *a, **k: universe)
     monkeypatch.setattr(cli, "load_ohlcv",
-                        lambda tickers, start, end, cache, refresh=False: fake_panel(tickers, start, end))
+                        lambda tickers, start, end, cache, refresh=False, **kw: fake_panel(tickers, start, end))
 
     cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
               "--trend-filter", "200", "--market-filter", "200", "--take-profit-first"])
@@ -58,12 +58,14 @@ def test_backtest_command_with_filters(tmp_path, monkeypatch, capsys):
     assert {"costs", "ambiguous"} <= set(trades.columns)
 
 
-def pullback_panel(tickers, start, end):
-    """Hausse régulière puis repli la dernière séance : DEEP -8 %, HELD -6 %, SOFT -5 %."""
-    drops = {"DEEP": 0.92, "HELD": 0.94, "SOFT": 0.95}
+def pullback_panel(tickers, start, end, **kw):
+    """Hausse régulière puis repli la dernière séance : DEEP -8 %, HELD -6 %, SOFT -5 %,
+    6758.T -10 % ; le dollar vaut 150 yens."""
+    drops = {"DEEP": 0.92, "HELD": 0.94, "SOFT": 0.95, "6758.T": 0.90}
     idx = pd.bdate_range(end=pd.Timestamp(end) - pd.Timedelta(days=1), periods=300)
     trend = 100 * 1.005 ** np.arange(len(idx))
-    close = pd.DataFrame({t: trend * np.r_[np.ones(len(idx) - 1), drops.get(t, 1.0)]
+    close = pd.DataFrame({t: np.full(len(idx), 150.0) if t.endswith("=X") else
+                          trend * np.r_[np.ones(len(idx) - 1), drops.get(t, 1.0)]
                           for t in tickers}, index=idx)
     return {"Open": close, "High": close * 1.01, "Low": close * 0.99, "Close": close,
             "Volume": pd.DataFrame(1e6, index=idx, columns=tickers)}
@@ -106,8 +108,8 @@ def test_scan_with_portfolio_lists_exact_orders(tmp_path, monkeypatch, capsys):
     assert list(orders["ticker"]) == ["DEEP", "SOFT"]  # RSI le plus bas d'abord, HELD déjà détenue
     assert set(orders["type"]) == {"RSI"}  # sans liste WLS, pas de grandes valeurs
     equity = 300_000 + 1_000 * pullback_panel(["HELD"], None, "2026-10-14")["Close"]["HELD"].iloc[-1]
-    assert (orders["montant_estime"] <= 0.20 * equity).all()
-    assert orders["montant_estime"].sum() <= 300_000
+    assert (orders["montant_estime_usd"] <= 0.20 * equity).all()
+    assert orders["montant_estime_usd"].sum() <= 300_000
     # VT monte régulièrement dans ces données : tendance haussière, objectif relevé à +10 %.
     assert (orders["take_profit_pct"] == 0.10).all()
     assert "stop loss -5% et take profit +10%" in out
@@ -127,26 +129,31 @@ def test_scan_reports_portfolio_errors_without_traceback(tmp_path, monkeypatch):
 
 
 
-def test_import_wls_keeps_us_members(tmp_path, monkeypatch, capsys):
+def test_import_wls_keeps_all_recognised_members(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "ROOT", tmp_path)
     source = tmp_path / "WLS.csv"
-    source.write_text(WLS_EXPORT + "BRK/B UN Equity,Berkshire,1.0,2000,500\n", encoding="utf-8")
+    source.write_text(WLS_EXPORT + "BRK/B UN Equity,Berkshire,1.0,2000,500\n"
+                      "EMAAR DB Equity,Emaar,0.01,100,10\n", encoding="utf-8")  # Dubaï : ignorée
     cli.main(["import-wls", str(source)])
     members = pd.read_csv(tmp_path / "data" / "wls_members.csv")
-    assert list(members["symbol"]) == ["BIG1", "BIG2", "BRK-B", "DEEP", "HELD", "SOFT"]
+    assert list(members["symbol"]) == ["BIG1", "BIG2", "BRK-B", "7203.T", "DEEP", "HELD", "SOFT"]
+    toyota = members.set_index("symbol").loc["7203.T"]
+    assert (toyota["currency"], toyota["bloomberg"]) == ("JPY", "7203 JT Equity")
     out = capsys.readouterr().out
-    assert "6 actions US membres du WLS" in out and "3 small & mid caps" in out
+    assert "7 actions membres du WLS" in out and "(sur 8 lignes" in out
+    assert "dont 6 américaines et 1 cotées sur 1 autres places" in out
 
 
 def test_scan_places_leftover_cash_in_largest_stocks(tmp_path, monkeypatch, capsys):
     run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD,1000,400\n",
              wls_text=WLS_EXPORT, extra_args=["--core-size", "2", "--core-min", "0"])
     out = capsys.readouterr().out
-    assert "Univers : 3 small & mid caps US membres du WLS" in out
+    assert "Univers : 3 actions membres du WLS, toutes places et tailles" in out
     orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
     assert list(orders["etape"]) == ["2. achat", "2. achat", "3. achat", "3. achat"]
     assert list(orders["ticker"]) == ["DEEP", "SOFT", "BIG1", "BIG2"]
-    assert orders["montant_estime"].sum() <= 600_000
+    assert list(orders["bloomberg"]) == ["DEEP UN", "SOFT UR", "BIG1 UW", "BIG2 UN"]
+    assert orders["montant_estime_usd"].sum() <= 600_000
     assert "2. Acheter ces grandes valeurs avec le cash restant" in out  # pas de vente : 2 étapes
 
 
@@ -157,13 +164,31 @@ def test_backtest_command_with_largest_stocks(tmp_path, monkeypatch, capsys):
     source.write_text("Ticker,Name,Weight,Shares,Price\n" + "\n".join(rows) + "\n", encoding="utf-8")
     monkeypatch.setattr(cli, "ROOT", tmp_path)
     monkeypatch.setattr(cli, "load_ohlcv",
-                        lambda tickers, start, end, cache, refresh=False: fake_panel(tickers, start, end))
+                        lambda tickers, start, end, cache, refresh=False, **kw: fake_panel(tickers, start, end))
     cli.main(["import-wls", str(source)])
     cli.main(["backtest", "--start", "2024-01-01", "--end", "2025-06-30", "--out", str(tmp_path),
               "--core-size", "2"])
     out = capsys.readouterr().out
-    assert "Univers : 30 small & mid caps US membres du WLS" in out
+    assert "Univers : 30 actions membres du WLS, toutes places et tailles" in out
     assert re.search(r"Part moyenne en grandes valeurs\s+\d+\.\d\d%", out)
     assert re.search(r"P&L grandes valeurs \(\$\)\s+-?[\d ]+\n", out)
     trades = pd.read_csv(tmp_path / "trades.csv")
     assert not trades["ticker"].str.startswith("BIG").any()
+
+
+
+def test_scan_handles_foreign_stocks_and_bloomberg_tickers(tmp_path, monkeypatch, capsys):
+    export = WLS_EXPORT + "6758 JT Equity,Sony Group,0.001,10,15000\n"
+    run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD UQ Equity,1000,400\n",
+             wls_text=export, extra_args=["--core-size", "2"])
+    out = capsys.readouterr().out
+    assert "Portefeuille : portefeuille.csv (1 position(s)" in out
+    orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
+    rsi = orders[orders["type"] == "RSI"].set_index("ticker")
+    # Du RSI le plus bas au plus haut (-10 %, -8 %, -5 %) ; HELD, saisie au format Bloomberg, est
+    # reconnue comme déjà détenue.
+    assert list(rsi.index) == ["6758.T", "DEEP", "SOFT"]
+    assert rsi.loc["6758.T", "bloomberg"] == "6758 JT"
+    sony_usd = pullback_panel(["6758.T"], None, "2026-10-14")["Close"]["6758.T"].iloc[-1] / 150
+    assert rsi.loc["6758.T", "dernier_cours_usd"] == pytest.approx(sony_usd, rel=1e-4)
+    assert "Taux de change (1 devises)" in out

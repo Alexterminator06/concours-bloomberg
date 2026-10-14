@@ -55,19 +55,29 @@ class BacktestResult:
 
 
 def compute_signals(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
-                    market_close: pd.Series | None = None):
+                    market_close: pd.Series | None = None,
+                    price_filter: list[str] | None = None):
     """Renvoie (RSI, signaux d'achat éligibles) sous forme de DataFrames dates x tickers.
 
+    Les bourses du monde n'ont pas les mêmes jours fériés : les indicateurs sont calculés sur le
+    dernier cours connu, et un signal n'est retenu que si l'action a coté ce jour-là.
     `market_close` (cours de l'indice principal) n'est requis que si `cfg.market_ma_days` > 0.
+    `price_filter` : tickers soumis au cours minimum `cfg.min_price` (par défaut, tous).
     """
     close, volume = panel["Close"], panel["Volume"]
-    rsi_values = rsi(close, cfg.rsi_period)
+    close_ff = close.ffill()
+    rsi_values = rsi(close_ff, cfg.rsi_period)
     signal = oversold_signal(rsi_values, cfg.rsi_threshold, cfg.consecutive_days)
-    avg_dollar_volume = (close * volume).rolling(cfg.avg_volume_window,
-                                                 min_periods=cfg.avg_volume_window).mean()
-    eligible = signal & (close >= cfg.min_price) & (avg_dollar_volume >= cfg.min_avg_dollar_volume)
+    window = cfg.avg_volume_window
+    avg_dollar_volume = (close * volume).rolling(window, min_periods=max(1, window // 2)).mean()
+    price_ok = close_ff >= cfg.min_price
+    if price_filter is not None:
+        price_ok.loc[:, close.columns.difference(price_filter)] = True
+    eligible = (signal & close.notna() & price_ok
+                & (avg_dollar_volume >= cfg.min_avg_dollar_volume))
     if cfg.trend_ma_days:
-        eligible &= close > close.rolling(cfg.trend_ma_days, min_periods=cfg.trend_ma_days).mean()
+        eligible &= close_ff > close_ff.rolling(cfg.trend_ma_days,
+                                                min_periods=cfg.trend_ma_days).mean()
     if cfg.market_ma_days:
         if market_close is None:
             raise ValueError("Le filtre de marché demande les cours de l'indice (market_close).")
@@ -190,16 +200,18 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                  start: str | pd.Timestamp | None = None,
                  end: str | pd.Timestamp | None = None,
                  market_close: pd.Series | None = None,
-                 core_shares: pd.Series | None = None) -> BacktestResult:
+                 core_shares: pd.Series | None = None,
+                 price_filter: list[str] | None = None) -> BacktestResult:
     """Simule la stratégie sur `panel` ({Open, High, Low, Close, Volume} -> DataFrame dates x tickers).
 
     Les données avant `start` servent uniquement au calcul des indicateurs (période de chauffe).
     `market_close` : cours de l'indice principal, requis pour le filtre de marché et le take profit
     adapté à la tendance. `core_shares` : titres de l'indice (en millions) des grandes valeurs
     candidates, dont les cours figurent dans `panel` ; sans elles, le cash reste en cash.
+    `price_filter` : tickers soumis au cours minimum (voir `compute_signals`).
     """
     close = panel["Close"]
-    rsi_values, eligible = compute_signals(panel, cfg, market_close)
+    rsi_values, eligible = compute_signals(panel, cfg, market_close, price_filter)
 
     dates = close.index
     mask = np.ones(len(dates), dtype=bool)
