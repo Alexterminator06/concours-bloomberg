@@ -51,12 +51,30 @@ def test_disk_full_does_not_stop_the_run(tmp_path, fake_download, monkeypatch, c
     assert "Cache non enregistré" in capsys.readouterr().out
 
 
-def test_old_cache_files_are_pruned(tmp_path, fake_download):
-    for k in range(data.MAX_CACHE_FILES + 3):
-        data.load_ohlcv(["A"], f"2024-01-{k + 1:02d}", "2024-03-01", tmp_path)
-        newest = max(tmp_path.glob("ohlcv_*.pkl"), key=os.path.getmtime)
-        os.utime(newest, (1_000_000 + k, 1_000_000 + k))  # horodatages distincts
-    assert len(list(tmp_path.glob("ohlcv_*.pkl"))) == data.MAX_CACHE_FILES
+def _load_with_distinct_mtime(tickers, start, tmp_path, k):
+    data.load_ohlcv(tickers, start, "2024-03-01", tmp_path)
+    newest = max(tmp_path.glob("ohlcv_*.pkl"), key=os.path.getmtime)
+    os.utime(newest, (1_000_000 + k, 1_000_000 + k))  # horodatages distincts
+    return newest
+
+
+def test_old_cache_files_are_pruned_beyond_the_size_budget(tmp_path, fake_download, monkeypatch):
+    first = _load_with_distinct_mtime(["A"], "2024-01-01", tmp_path, 0)
+    monkeypatch.setattr(data, "MAX_CACHE_BYTES", int(3.5 * first.stat().st_size))
+    for k in range(1, 7):
+        _load_with_distinct_mtime(["A"], f"2024-01-{k + 1:02d}", tmp_path, k)
+    assert len(list(tmp_path.glob("ohlcv_*.pkl"))) == 3
+
+
+def test_small_cache_files_do_not_evict_the_stock_prices(tmp_path, fake_download, monkeypatch):
+    # Chaque backtest écrit les actions, puis les taux de change et les indices (petits fichiers) :
+    # les actions du run précédent doivent rester en cache.
+    stocks = _load_with_distinct_mtime([f"T{k}" for k in range(300)], "2024-01-01", tmp_path, 0)
+    small = _load_with_distinct_mtime(["VT"], "2024-01-01", tmp_path, 1)
+    monkeypatch.setattr(data, "MAX_CACHE_BYTES", stocks.stat().st_size + 10 * small.stat().st_size)
+    for k in range(2, 8):
+        _load_with_distinct_mtime([f"FX{k}"], "2024-01-01", tmp_path, k)
+    assert stocks.exists()
 
 
 def test_download_summarises_tickers_without_prices(monkeypatch, capsys):

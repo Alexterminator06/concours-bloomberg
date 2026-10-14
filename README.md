@@ -122,9 +122,12 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--refresh-universe` | | sans liste WLS : ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |
 | `--refresh-data` | | ignore le cache des cours (`data/cache/`) |
 
-Les cours téléchargés sont mis en cache dans `data/cache/` (environ 90 Mo par période pour
-2 000 actions). Seuls les 4 fichiers les plus récents sont conservés, et le dossier peut être
-supprimé sans risque.
+Les cours téléchargés sont mis en cache dans `data/cache/` (environ 40 Mo par période pour
+l'univers US, 250 Mo pour l'univers mondial). Un backtest relancé sur la même période réutilise
+ces cours au lieu de les retélécharger. Le cache garde les fichiers les plus récemment utilisés,
+dans la limite de 1,5 Go (`MAX_CACHE_BYTES` dans `rsi_strategy/data.py`), et le dossier peut être
+supprimé sans risque. La date de fin par défaut étant le jour même, un backtest lancé le lendemain
+retélécharge tout : pour comparer plusieurs runs sur plusieurs jours, fixez `--end`.
 
 Au premier lancement, l'univers est enregistré dans `data/universe.csv`. On peut éditer ce fichier
 ou le remplacer par sa propre liste : seule la colonne `symbol` est obligatoire.

@@ -10,7 +10,10 @@ from pathlib import Path
 import pandas as pd
 
 FIELDS = ["Open", "High", "Low", "Close", "Volume"]
-MAX_CACHE_FILES = 4  # fichiers de cache conservés (les plus récemment utilisés)
+# Place maximale du cache, en octets : les fichiers les plus récemment utilisés sont gardés.
+# Un backtest mondial en occupe environ 250 Mo par période (actions), plus quelques petits
+# fichiers (indices, taux de change).
+MAX_CACHE_BYTES = 1_500_000_000
 THREADS = 8          # requêtes simultanées vers Yahoo : au-delà, Yahoo bloque plus souvent
 PAUSE = 1.0          # secondes entre deux paquets d'actions
 RETRY_WAITS = (60, 120, 240)  # attentes avant de réessayer quand Yahoo bloque (« Too Many Requests »)
@@ -194,7 +197,10 @@ def load_ohlcv(tickers: list[str], start: str, end: str | None, cache_dir: Path,
 
 
 def _write_cache(panel: dict[str, pd.DataFrame], path: Path) -> None:
-    """Écrit le cache via un fichier temporaire, puis supprime les plus anciens.
+    """Écrit le cache via un fichier temporaire, puis supprime les plus anciens au-delà de
+    `MAX_CACHE_BYTES`. La limite porte sur la place occupée, pas sur le nombre de fichiers : chaque
+    backtest écrit aussi de petits fichiers (indices, taux de change), qui ne doivent pas chasser
+    les gros fichiers des actions.
 
     Un échec d'écriture (disque plein...) ne laisse aucun fichier tronqué et n'interrompt pas
     le backtest : on continue simplement sans cache.
@@ -209,5 +215,10 @@ def _write_cache(panel: dict[str, pd.DataFrame], path: Path) -> None:
         print(f"  ! Cache non enregistré ({exc.strerror or exc}) : on continue sans cache.")
         return
     files = sorted(path.parent.glob("ohlcv_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for old in files[MAX_CACHE_FILES:] + list(path.parent.glob("ohlcv_*.tmp")):
+    total = 0
+    for old in files:
+        total += old.stat().st_size
+        if total > MAX_CACHE_BYTES and old != path:
+            old.unlink(missing_ok=True)
+    for old in path.parent.glob("ohlcv_*.tmp"):
         old.unlink(missing_ok=True)
