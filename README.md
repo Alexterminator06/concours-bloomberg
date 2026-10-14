@@ -198,35 +198,39 @@ stratégie est nettement moins bonne :
 |---|---|---|---|
 | Univers Yahoo | +166 % · 0,66 %/trade | +42 % · 0,41 %/trade | +278 % |
 | Univers WLS (actions autorisées), RSI seul | +66 % · 0,30 %/trade | +20 % · 0,18 %/trade | +99 % |
-| **Univers WLS + 50 % réservés aux 10 plus grandes valeurs (défaut)** | **+80 %** | **+101 %** | **+275 %** |
+| Univers WLS US + 50 % réservés aux 10 plus grandes valeurs (ancien run) | +80 % | +101 % | +275 % |
 | Indice VT (≈ WLS) | +57 % | +80 % | +182 % |
 
 Sur l'univers WLS, le gain moyen par trade reste positif (environ +0,25 % sur ~1 750 trades), mais
 la stratégie ne bat VT que sur 2019-2023. Avec le cash restant seulement, les grandes valeurs ne
 pèsent en moyenne que 0,2 à 1,4 % du portefeuille : les achats RSI prennent presque tout le cash.
-Leur réserver la moitié du portefeuille (`--core-min 0.5`, le défaut) fait mieux que VT
-sur les deux périodes : +23 points sur 2019-2023 et +22 points sur 2023-2026, avec un drawdown plus
-faible que l'indice sur 2019-2023 (-29 % contre -34 %). L'essentiel de ce gain vient des grandes
+Leur réserver la moitié du portefeuille (`--core-min 0.5`, le défaut) a d'abord été testé sur
+l'univers américain, et a fait mieux que VT sur les deux périodes : +23 points sur 2019-2023 et
++22 points sur 2023-2026, avec un drawdown plus faible que l'indice sur 2019-2023 (-29 % contre
+-34 %). L'essentiel de ce gain vient des grandes
 valeurs (+0,6 à +0,7 M$ par période, contre +0,2 à +0,4 M$ pour les trades RSI) : la stratégie
 parie en partie sur les grandes valeurs américaines, qui ont dominé le marché mondial de 2019 à
 2026. Rien ne garantit que cela continue.
 
-C'est la seule configuration qui a battu VT sur les deux périodes : c'est donc le réglage par
-défaut. Elle a été testée sur l'univers américain (`--universe us`) ; la combinaison avec l'univers
-mondial, défaut actuel, n'a pas été testée.
-
-L'univers mondial (tous les membres du WLS) a été comparé à l'univers américain, RSI seul :
+L'univers mondial (tous les membres du WLS) a ensuite été comparé à l'univers américain, en RSI
+seul puis avec la réserve de 50 %, avec la même version du code :
 
 | Face à VT (≈ WLS) | 2019-2023 | 2023-2026 |
 |---|---|---|
-| Univers mondial | +40 pts (≈ +16 pts une fois retirées des erreurs de données) | -70 pts |
-| Univers US | +6 pts | -28 pts |
+| **Univers mondial + 50 % grandes valeurs (défaut)** | **+99 % → +42 pts** (≈ +55 pts une fois retirées les erreurs de données) | **+145 % → +68 pts** |
+| Univers US + 50 % grandes valeurs | +93 % → +36 pts | +74 % → -4 pts |
+| Univers mondial, RSI seul (`--core-min 0`) | +97 % → +40 pts (≈ +16 pts corrigé) | +9 % → -70 pts |
+| Univers US, RSI seul (`--core-min 0`) | +64 % → +6 pts | +52 % → -28 pts |
 
-Le fichier de trades mondial de 2019-2023 contient trois gains impossibles (sauts de cours au-delà
-des plafonds de variation chinois et taïwanais) et un achat pendant une suspension de cotation.
-Sur 2023-2026, il n'y a pas d'erreur de données, mais une longue série de trades perdants hors des
-États-Unis depuis fin 2024. Pour relancer la comparaison avec la part réservée aux grandes
-valeurs :
+Avec la réserve de 50 %, l'univers mondial fait mieux que l'univers américain sur les deux
+périodes : c'est le réglage par défaut. Dans tous ces runs, les 10 grandes valeurs sont les plus
+grandes du WLS entier (TSMC comprise) et rapportent de 0,58 à 0,78 M$ par période. La moitié RSI,
+qui ne tient que 2 ou 3 positions à la fois, varie beaucoup d'un run à l'autre : une partie de
+l'avance de l'univers mondial vient du hasard.
+
+Les fichiers de trades de l'univers mondial sur 2019-2023 contiennent des gains impossibles (sauts
+de cours au-delà des plafonds de variation chinois et taïwanais) et un achat pendant une
+suspension de cotation (Mesoblast, août 2023), d'où les valeurs corrigées. Pour rejouer ces runs :
 
 ```bash
 python -m rsi_strategy backtest --out results/monde_gv50
