@@ -2,9 +2,10 @@
 
 Stratégie de retour à la moyenne, positions longues uniquement :
 on achète les small et mid caps US en tendance haussière qui viennent de subir un repli brutal
-(RSI(2) sous 10), avec un stop loss et un take profit à 5 %. Le cash inutilisé est placé dans
-les plus grandes valeurs US. La performance est comparée
-au WLS, l'indice du concours Bloomberg. Les cours viennent de Yahoo Finance (via `yfinance`).
+(RSI(2) sous 10), avec un stop loss et un take profit à 5 %. Au moins la moitié du portefeuille
+reste placée dans les 10 plus grandes valeurs US, pour suivre le marché. La performance est
+comparée au WLS, l'indice du concours Bloomberg. Les cours viennent de Yahoo Finance (via
+`yfinance`).
 
 ## Règles
 
@@ -15,7 +16,7 @@ au WLS, l'indice du concours Bloomberg. Les cours viennent de Yahoo Finance (via
 | Fréquence | **Un scan par jour**, après la clôture. L'achat se fait à l'ouverture de la séance suivante, ce qui évite tout biais d'anticipation. |
 | Stop loss | **-5 %** par rapport au prix d'achat. |
 | Take profit | **+5 %** par rapport au prix d'achat. Un objectif relevé à +10 % quand le marché est en tendance haussière existe en option (`--take-profit-bull 0.10`), mais il fait moins bien dans les backtests (voir plus bas). |
-| Cash restant | Placé dans les **10 plus grandes capitalisations US du WLS** (une catégorie d'actions par société), à parts à peu près égales, sans stop ni take profit, pour suivre le marché au lieu de dormir. Elles sont vendues en priorité, en partant des plus grosses lignes, pour financer les achats RSI. |
+| Grandes valeurs | **Au moins 50 % du portefeuille**, plus le cash que les achats RSI n'utilisent pas, dans les **10 plus grandes capitalisations US du WLS** (une catégorie d'actions par société), à parts à peu près égales, sans stop ni take profit. Les achats RSI n'utilisent donc que l'autre moitié ; au-delà des 50 %, les grandes valeurs sont vendues en priorité, en partant des plus grosses lignes, pour les financer. |
 | Sens | Positions longues uniquement, sans levier. |
 | Capital | **1 000 000 $**. |
 | Taille des positions | **20 % de la valeur totale du portefeuille au maximum par position**, sans limite sur le nombre de positions. Sans levier, c'est le cash disponible qui limite : à 20 % par position, cela fait environ 5 positions simultanées. Les signaux sont exécutés du RSI le plus bas au plus haut tant qu'il reste du cash. On n'ouvre pas de position inférieure à 2 % du portefeuille, et une action déjà détenue n'est pas rachetée. |
@@ -100,7 +101,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--stop-loss` / `--take-profit` | 0.05 / 0.05 | niveaux de sortie |
 | `--take-profit-bull` | 0 (désactivé) | take profit quand VT est au-dessus de sa moyenne 200 séances (ex. 0.10) |
 | `--core-size` | 10 | nombre de grandes valeurs pour le cash restant (0 = le cash reste en cash) |
-| `--core-min` | 0 | part du portefeuille réservée aux grandes valeurs, ex. 0.5 : les achats RSI n'utilisent que le reste |
+| `--core-min` | 0.5 | part du portefeuille réservée aux grandes valeurs ; les achats RSI n'utilisent que le reste (0 = seulement le cash restant) |
 | `--wls-file` | `data/wls_members.csv` | membres US du WLS, créés par `import-wls` |
 | `--take-profit-first` | | si stop et objectif sont touchés la même séance, retenir l'objectif (borne optimiste) |
 | `--commission-bps` / `--slippage-bps` | 0 / 0 | coûts de transaction, en points de base (1 pb = 0,01 %) |
@@ -181,18 +182,19 @@ stratégie est nettement moins bonne :
 | RSI(2) < 10 + tendance 200, take profit 5 % | 2019-2023 | 2023-2026 | Environ 7 ans |
 |---|---|---|---|
 | Univers Yahoo | +166 % · 0,66 %/trade | +42 % · 0,41 %/trade | +278 % |
-| **Univers WLS (actions autorisées)** | **+66 % · 0,30 %/trade** | **+20 % · 0,18 %/trade** | **+99 %** |
+| Univers WLS (actions autorisées) | +66 % · 0,30 %/trade | +20 % · 0,18 %/trade | +99 % |
+| **Univers WLS + 50 % dans les 10 plus grandes valeurs (défaut)** | **+80 %** | **+101 %** | **+275 %** |
 | Indice VT (≈ WLS) | +57 % | +80 % | +182 % |
 
 Sur l'univers WLS, le gain moyen par trade reste positif (environ +0,25 % sur ~1 750 trades), mais
 la stratégie ne bat VT que sur 2019-2023. Avec le cash restant seulement, les grandes valeurs ne
 pèsent en moyenne que 0,2 à 1,4 % du portefeuille : les achats RSI prennent presque tout le cash.
-L'option `--core-min` leur réserve une part fixe, pour suivre davantage le marché :
-
-```bash
-python -m rsi_strategy backtest --core-min 0.5 --out results/gv50
-python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-min 0.5 --out results/oos_gv50
-```
+Leur réserver la moitié du portefeuille (`--core-min 0.5`, désormais le défaut) fait mieux que VT
+sur les deux périodes : +23 points sur 2019-2023 et +22 points sur 2023-2026, avec un drawdown plus
+faible que l'indice sur 2019-2023 (-29 % contre -34 %). L'essentiel de ce gain vient des grandes
+valeurs (+0,6 à +0,7 M$ par période, contre +0,2 à +0,4 M$ pour les trades RSI) : la stratégie
+parie en partie sur les grandes valeurs américaines, qui ont dominé le marché mondial de 2019 à
+2026. Rien ne garantit que cela continue.
 
 Dans le backtest, les grandes valeurs sont choisies chaque mois parmi les 100 plus gros membres
 actuels du WLS, d'après leur capitalisation **à l'époque** (titres de l'indice aujourd'hui × cours

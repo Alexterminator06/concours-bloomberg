@@ -387,3 +387,10 @@ def test_reserved_share_of_largest_stocks_limits_rsi_buys():
     assert rsi_share.iloc[ENTRY_DAY] > 0.45  # et la place est bien utilisée
     assert (eq["core"] / eq["equity"]).iloc[ENTRY_DAY:].min() > 0.45
     assert (eq["cash"] >= -1e-6).all()
+
+
+
+def test_default_reserves_half_of_the_portfolio_for_largest_stocks():
+    defaults = StrategyConfig()
+    assert (defaults.core_size, defaults.core_min_pct) == (10, 0.5)
+    assert defaults.take_profit_bull_pct == 0  # take profit fixe à 5 %

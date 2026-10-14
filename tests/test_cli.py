@@ -140,7 +140,7 @@ def test_import_wls_keeps_us_members(tmp_path, monkeypatch, capsys):
 
 def test_scan_places_leftover_cash_in_largest_stocks(tmp_path, monkeypatch, capsys):
     run_scan(tmp_path, monkeypatch, "ticker,quantite,prix_achat\nCASH,600000,\nHELD,1000,400\n",
-             wls_text=WLS_EXPORT, extra_args=["--core-size", "2"])
+             wls_text=WLS_EXPORT, extra_args=["--core-size", "2", "--core-min", "0"])
     out = capsys.readouterr().out
     assert "Univers : 3 small & mid caps US membres du WLS" in out
     orders = pd.read_csv(next((tmp_path / "results").glob("ordres_*.csv")))
