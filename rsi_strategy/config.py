@@ -51,8 +51,9 @@ class StrategyConfig:
     core_size: int = 10
     # Part minimale du portefeuille réservée aux grandes valeurs (0 = seulement le cash restant).
     # Les achats RSI ne peuvent alors utiliser que (1 - core_min_pct) de la valeur totale.
-    # 50 % : retenu après les backtests 2019-2023 et 2023-2026 (bat VT sur les deux périodes).
-    core_min_pct: float = 0.5
+    # Avec 0.5, les backtests battent VT sur les deux périodes, mais surtout grâce aux grandes
+    # valeurs : la stratégie reste centrée sur les signaux RSI, sans part réservée.
+    core_min_pct: float = 0.0
     # Backtest : candidates (plus gros poids actuels du WLS) parmi lesquelles on retient chaque mois
     # les `core_size` plus grandes capitalisations de l'époque.
     core_pool_size: int = 100
