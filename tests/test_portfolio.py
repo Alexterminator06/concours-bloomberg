@@ -179,3 +179,35 @@ def test_reserved_share_of_largest_stocks_in_daily_orders():
     assert rsi_cost <= 500_000 + 1e-6
     assert list(plan.orders.index) == ["A", "B", "C"]  # 20 % + 20 % + le reste des 50 %
     assert plan.core_buys["montant_estime"].sum() > 450_000
+
+
+# --- Positions données en dollars --------------------------------------------------------------
+
+def test_load_positions_given_in_dollars(tmp_path):
+    text = "Ticker;Montant USD;Prix achat\nCASH;17 334;\nMU UW;36 565,50;914,13\n7203 JT;36 700;\n"
+    pf = load_portfolio(write(tmp_path, text))
+    assert pf.cash == 17_334
+    assert pf.positions.loc["MU UW", "montant_usd"] == pytest.approx(36_565.5)
+    assert math.isnan(pf.positions.loc["MU UW", "quantite"])
+    assert list(pf.positions.index) == ["MU UW", "7203 JT"]
+
+
+def test_quantity_wins_over_amount_when_both_are_given(tmp_path):
+    pf = load_portfolio(write(tmp_path, "ticker,quantite,montant_usd\nCASH,,1000\nKFY,10,999\n"))
+    assert pf.cash == 1000
+    assert pf.positions.loc["KFY", "quantite"] == 10 and math.isnan(pf.positions.loc["KFY", "montant_usd"])
+
+
+def test_dollar_amounts_are_turned_into_shares_at_the_last_price():
+    pos = pd.DataFrame({"quantite": [math.nan, math.nan], "montant_usd": [36_565.0, 5_000.0],
+                        "prix_achat": [math.nan, 12.0]}, index=["BIG", "OLD"])
+    pf = Portfolio(cash=100_000, positions=pos)
+    plan = plan_orders(signals(), pf, pd.Series({"BIG": 914.13}), StrategyConfig(),
+                       core_universe=["BIG"])
+    assert plan.positions.loc["BIG", "quantite"] == 40  # 36 565 / 914,13 = 40,0
+    assert plan.positions.loc["BIG", "valeur"] == pytest.approx(36_565)
+    # Sans cours récent : valorisée au montant donné, et signalée.
+    assert plan.positions.loc["OLD", "valeur"] == pytest.approx(5_000)
+    assert plan.equity == pytest.approx(141_565) and plan.unpriced == ["OLD"]
+    # BIG ne fait plus partie des grandes valeurs retenues : ses 40 actions sont vendues.
+    assert plan.core_sells.loc["BIG", "quantite"] == 40

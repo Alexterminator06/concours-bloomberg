@@ -330,3 +330,13 @@ def test_scan_caps_largest_stocks_per_sector(tmp_path, monkeypatch, capsys):
     bought = set(orders.loc[orders["type"] != "RSI", "ticker"])
     assert len(bought) == 2 and "BIG2" in bought  # une seule des deux valeurs Technology
     assert (tmp_path / "data" / "secteurs.csv").exists()
+
+
+def test_scan_reads_positions_given_in_dollars(tmp_path, monkeypatch, capsys):
+    run_scan(tmp_path, monkeypatch, "ticker,montant_usd\nCASH,600000\nHELD,200000\n")
+    out = capsys.readouterr().out
+    assert "Valeur totale estimée : 800 000 $" in out
+    # 200 000 $ au dernier cours de HELD : nombre d'actions arrondi en dessous.
+    price = pullback_panel(["HELD"], None, "2026-10-16")["Close"]["HELD"].iloc[-1]
+    row = next(line for line in out.splitlines() if line.startswith("HELD"))
+    assert row.split()[2] == str(int(200_000 // price))

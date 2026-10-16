@@ -66,15 +66,19 @@ python -m rsi_strategy scan
    modèle `portefeuille.exemple.csv` :
 
    ```csv
-   ticker,quantite,prix_achat
+   ticker,montant_usd,prix_achat
    CASH,612500,
-   KFY,2800,71.02
-   7203 JT,3000,2984
+   KFY,198856,71.02
+   7203 JT,36700,2984
    ```
 
-   La ligne `CASH` donne le cash disponible, en dollars. Les tickers peuvent être recopiés tels que
-   la plateforme les affiche (`7203 JT` ou `7203 JT Equity`) ou au format Yahoo (`7203.T`). Le prix
-   d'achat est en devise de cotation ; il ne sert qu'à afficher le niveau du stop. Le fichier peut aussi être enregistré depuis Excel
+   `montant_usd` est la valeur de chaque position en dollars, telle qu'affichée par la plateforme ;
+   la ligne `CASH` donne le cash disponible, en dollars. Le scan en déduit le nombre d'actions au
+   dernier cours, arrondi en dessous pour ne jamais vendre plus que ce qui est détenu. On peut aussi
+   donner le nombre d'actions dans une colonne `quantite` (il l'emporte sur le montant quand les
+   deux sont remplis). Les tickers peuvent être recopiés tels que la plateforme les affiche
+   (`7203 JT` ou `7203 JT Equity`) ou au format Yahoo (`7203.T`). Le prix d'achat, facultatif, est
+   en devise de cotation ; il ne sert qu'à afficher le niveau du stop. Le fichier peut aussi être enregistré depuis Excel
    (séparateur `;` et virgule décimale acceptés). Il n'est pas envoyé sur GitHub.
 2. **Lancez le scan** : `python -m rsi_strategy scan`. Il affiche la valeur du portefeuille, le
    poids de chaque position, puis les **ordres de l'ouverture, dans l'ordre où les passer** :

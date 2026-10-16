@@ -23,7 +23,10 @@ CORE_LABEL = "grande valeur"
 @dataclass
 class Portfolio:
     cash: float
-    positions: pd.DataFrame  # index : ticker ; colonnes : quantite, prix_achat (NaN si inconnu)
+    # index : ticker ; colonnes : quantite, montant_usd, prix_achat (NaN si inconnu). Une position
+    # donnée par son montant en dollars (montant_usd) n'a pas de quantité : le scan la déduit du
+    # dernier cours.
+    positions: pd.DataFrame
 
 
 @dataclass
@@ -66,37 +69,49 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="cp1252")
 
 
-def load_portfolio(path: Path) -> Portfolio:
-    """Lit le portefeuille : colonnes `ticker`, `quantite` et, en option, `prix_achat`.
+AMOUNT_COLUMNS = ("montant_usd", "montant", "valeur_usd", "valeur")
 
-    Une ligne dont le ticker est `CASH` donne le cash disponible (dans la colonne `quantite`).
-    Les séparateurs `,` et `;` sont acceptés, ainsi que la virgule décimale.
+
+def load_portfolio(path: Path) -> Portfolio:
+    """Lit le portefeuille : colonne `ticker`, puis `montant_usd` (valeur de la position en
+    dollars) ou `quantite` (nombre d'actions), et en option `prix_achat` (devise de cotation).
+
+    Une ligne dont le ticker est `CASH` donne le cash disponible, en dollars, dans la colonne
+    `montant_usd` ou `quantite`. Les séparateurs `,` et `;` sont acceptés, ainsi que la virgule
+    décimale.
     """
     text = _read_text(path)
     header = text.splitlines()[0] if text.strip() else ""
     sep = ";" if ";" in header else "\t" if "\t" in header else ","
     df = pd.read_csv(io.StringIO(text), sep=sep, dtype=str, skipinitialspace=True)
     df.columns = [_normalize(c) for c in df.columns]
-    if "ticker" not in df.columns or "quantite" not in df.columns:
-        raise ValueError(f"{path.name} : colonnes attendues « ticker, quantite, prix_achat ».")
+    amount_column = next((c for c in AMOUNT_COLUMNS if c in df.columns), None)
+    if amount_column:
+        df = df.rename(columns={amount_column: "montant_usd"})
+    if "ticker" not in df.columns or not {"quantite", "montant_usd"} & set(df.columns):
+        raise ValueError(f"{path.name} : colonnes attendues « ticker, montant_usd, prix_achat » "
+                         f"(ou « quantite » au lieu de « montant_usd »).")
 
     df["ticker"] = df["ticker"].fillna("").str.strip().str.upper()
     df = df[df["ticker"] != ""].copy()
     try:
-        df["quantite"] = df["quantite"].map(_parse_number)
-        df["prix_achat"] = df["prix_achat"].map(_parse_number) if "prix_achat" in df else math.nan
+        for column in ("quantite", "montant_usd", "prix_achat"):
+            df[column] = df[column].map(_parse_number) if column in df else math.nan
     except ValueError as exc:
         raise ValueError(f"{path.name} : {exc}") from None
 
     is_cash = df["ticker"] == CASH_TICKER
     if not is_cash.any():
         raise ValueError(f"{path.name} : ajoutez une ligne « CASH » avec votre cash disponible.")
-    positions = df.loc[~is_cash & (df["quantite"] > 0), ["ticker", "quantite", "prix_achat"]]
+    # Une quantité donnée l'emporte sur le montant.
+    df.loc[df["quantite"].notna(), "montant_usd"] = math.nan
+    held = (df["quantite"] > 0) | (df["montant_usd"] > 0)
+    positions = df.loc[~is_cash & held, ["ticker", "quantite", "montant_usd", "prix_achat"]]
     duplicated = positions["ticker"][positions["ticker"].duplicated()].unique()
     if len(duplicated):
         raise ValueError(f"{path.name} : ticker présent plusieurs fois : {', '.join(duplicated)}.")
-    return Portfolio(cash=float(df.loc[is_cash, "quantite"].sum()),
-                     positions=positions.set_index("ticker"))
+    cash = df.loc[is_cash, "quantite"].fillna(df.loc[is_cash, "montant_usd"])
+    return Portfolio(cash=float(cash.sum()), positions=positions.set_index("ticker"))
 
 
 def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Series,
@@ -116,10 +131,20 @@ def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Ser
     représentées.
     """
     pos = portfolio.positions.copy()
+    if "montant_usd" not in pos:
+        pos["montant_usd"] = math.nan
     pos["dernier_cours"] = last_prices.reindex(pos.index)
     unpriced = list(pos.index[pos["dernier_cours"].isna()])
+    # Positions données en dollars : nombre d'actions estimé au dernier cours, arrondi en dessous
+    # pour ne jamais vendre plus que ce qui est détenu.
+    from_amount = pos["quantite"].isna() & pos["montant_usd"].notna()
+    estimated = (pos["montant_usd"] / pos["dernier_cours"]).apply(
+        lambda q: math.floor(q + 1e-3) if pd.notna(q) else q)
+    pos["quantite"] = pos["quantite"].fillna(estimated)
     pos["dernier_cours"] = pos["dernier_cours"].fillna(pos["prix_achat"])  # à défaut, prix d'achat
     pos["valeur"] = pos["quantite"] * pos["dernier_cours"]
+    # Montant donné : c'est la valeur de la position (sans cours, la seule connue).
+    pos.loc[from_amount, "valeur"] = pos.loc[from_amount, "montant_usd"]
     equity = portfolio.cash + pos["valeur"].sum()  # sum() ignore les positions sans aucun prix
     if equity <= 0:
         raise ValueError("Portefeuille vide : indiquez votre cash sur la ligne CASH.")
