@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .backtest import even_out_sales
 from .config import StrategyConfig
 
 CASH_TICKER = "CASH"
@@ -205,15 +206,15 @@ def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Ser
         amount = quantity * sig["dernier_cours"]
         rows[ticker] = [sig["rsi"], sig["dernier_cours"], quantity, amount, amount / equity]
 
-    # 3. Financement : on vend des grandes valeurs, des plus grosses lignes aux plus petites.
-    for t in sorted(kept, key=kept.get, reverse=True):
-        if cash >= spent:
-            break
+    # 3. Financement : on abaisse les plus grosses grandes valeurs à un même niveau, pour qu'elles
+    #    restent à parts à peu près égales (comme dans le backtest).
+    for t, value in even_out_sales(kept, (spent - cash) / sell_unit).items():
         held = int(pos.loc[t, "quantite"]) - sells.get(t, 0)
-        quantity = min(held, math.ceil((spent - cash) / (price[t] * sell_unit)))
-        sells[t] = sells.get(t, 0) + quantity
-        cash += quantity * price[t] * sell_unit
-        kept[t] -= quantity * price[t]
+        quantity = min(held, math.ceil(value / price[t] - 1e-9))
+        if quantity > 0:
+            sells[t] = sells.get(t, 0) + quantity
+            cash += quantity * price[t] * sell_unit
+            kept[t] -= quantity * price[t]
     cash -= spent
 
     # 4. Le cash restant va aux grandes valeurs les moins représentées.

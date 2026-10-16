@@ -582,3 +582,30 @@ def test_largest_stock_that_rose_above_the_limit_is_cut_back_to_it():
     last = panel["Close"].index[-1]
     weight = res.core_holdings["RISE"] * panel["Close"].loc[last, "RISE"] / eq["equity"].iloc[-1]
     assert weight <= 0.20 * 1.05  # ramenée chaque matin à 20 % (sa hausse du jour en plus)
+
+
+def test_sales_bring_the_largest_lines_down_to_a_common_level():
+    from rsi_strategy.backtest import even_out_sales
+
+    values = {"A": 300.0, "B": 200.0, "C": 100.0}
+    sales = even_out_sales(values, 150.0)
+    assert sales == pytest.approx({"A": 125.0, "B": 25.0})  # A et B ramenées à 175, C intacte
+    assert even_out_sales(values, 700.0) == values           # plus que le total : tout est vendu
+    # Avec des poids visés, chaque ligne descend au même niveau rapporté à son poids.
+    weighted = even_out_sales({"A": 300.0, "B": 300.0}, 200.0, {"A": 0.75, "B": 0.25})
+    assert weighted == pytest.approx({"B": 200.0})  # B ramenée à 100 : 300 / 0,75 = 100 / 0,25
+
+
+def test_funding_rsi_buys_keeps_largest_stocks_at_equal_weights():
+    from rsi_strategy.backtest import CoreSleeve
+
+    names = [f"B{k}" for k in range(10)]
+    col = {t: j for j, t in enumerate(names)}
+    prices = np.full(10, 100.0)
+    sleeve = CoreSleeve(col, pd.Series({t: 1.0 for t in names}), 10, 0.0, 0.0)
+    sleeve.select(prices)
+    sleeve.invest(1_000_000, 20_000, 200_000, prices)  # 100 000 $ par ligne
+    cash = sleeve.raise_cash(500_000, prices)
+    assert cash >= 500_000
+    values = [sleeve.holdings.get(t, 0) * 100.0 for t in names]
+    assert min(values) >= 49_000 and max(values) <= 50_100  # 10 lignes d'environ 50 000 $

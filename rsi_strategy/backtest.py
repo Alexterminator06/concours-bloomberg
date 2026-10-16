@@ -145,6 +145,31 @@ def market_is_falling(market: np.ndarray, dates: pd.DatetimeIndex, row: int, mon
 MAX_PAST_CAP_RATIO = 20
 
 
+def even_out_sales(values: dict[str, float], need: float,
+                   weights: dict[str, float] | None = None) -> dict[str, float]:
+    """Montants à vendre pour obtenir `need` en abaissant les plus grosses lignes (rapportées à
+    leur poids visé, 1 par défaut) jusqu'à un même niveau : les lignes restent à parts égales au
+    lieu de se vider l'une après l'autre. Tout est vendu si `need` dépasse le total."""
+    if need <= 0 or not values:
+        return {}
+    if need >= sum(values.values()):
+        return {t: v for t, v in values.items() if v > 0}
+    weight = {t: max((weights or {}).get(t, 1.0 if weights is None else 0.0), 1e-9)
+              for t in values}
+    ranked = sorted(values, key=lambda t: values[t] / weight[t], reverse=True)
+    level, total_value, total_weight = 0.0, 0.0, 0.0
+    for k, t in enumerate(ranked):
+        total_value += values[t]
+        total_weight += weight[t]
+        level = (total_value - need) / total_weight
+        following = values[ranked[k + 1]] / weight[ranked[k + 1]] if k + 1 < len(ranked) else 0.0
+        if level >= following:
+            break
+    level = max(level, 0.0)
+    return {t: values[t] - level * weight[t] for t in ranked
+            if values[t] - level * weight[t] > 1e-6}
+
+
 def pick_by_sector(ranked: list[str], size: int, sectors: dict[str, str],
                    sector_max: int) -> list[str]:
     """Les `size` premières de `ranked`, au plus `sector_max` par secteur (0 = pas de plafond ;
@@ -348,20 +373,16 @@ class CoreSleeve:
         return pnl
 
     def raise_cash(self, amount: float, prices: np.ndarray) -> float:
-        """Vend des grandes valeurs, des plus grosses lignes aux plus petites, pour obtenir au
-        moins `amount` ; renvoie le cash obtenu."""
+        """Vend des grandes valeurs pour obtenir au moins `amount`, en abaissant les plus grosses
+        lignes (ou les plus au-dessus de leur poids visé) à un même niveau ; renvoie le cash."""
+        values = {t: n * self._price(t, prices) for t, n in self.holdings.items()
+                  if np.isfinite(self._price(t, prices)) and self._price(t, prices) > 0}
+        unit = (1 - self.slip) * (1 - self.comm)
         cash = 0.0
-        # Des plus grosses lignes aux plus petites, ou des plus au-dessus de leur poids visé.
-        weight = (lambda t: 1.0) if not self.targets else (lambda t: self.targets.get(t, 1e-9))
-        by_value = sorted(self.holdings,
-                          key=lambda t: -self.holdings[t] * self._price(t, prices) / weight(t))
-        for t in by_value:
-            price = self._price(t, prices)
-            if cash >= amount or not np.isfinite(price):
-                continue
-            unit = price * (1 - self.slip) * (1 - self.comm)
-            shares = min(self.holdings[t], math.ceil((amount - cash) / unit))
-            cash += self._sell(t, shares, price)
+        for t, value in even_out_sales(values, amount / unit, self.targets).items():
+            shares = min(self.holdings[t], math.ceil(value / self._price(t, prices) - 1e-9))
+            if shares > 0:
+                cash += self._sell(t, shares, self._price(t, prices))
         return cash
 
     def invest(self, cash: float, min_order: float, max_value: float, prices: np.ndarray) -> float:
