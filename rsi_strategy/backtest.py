@@ -139,9 +139,10 @@ def market_is_falling(market: np.ndarray, dates: pd.DatetimeIndex, row: int, mon
 # La capitalisation passée d'une candidate est estimée avec ses titres actuels. Après une émission
 # massive d'actions, que Yahoo n'ajuste pas comme une division (LATAM en 2022 : environ 1 000 fois
 # plus de titres), l'estimation devient absurde : on ignore la candidate tant qu'elle dépasse ce
-# multiple de sa capitalisation actuelle. Une vraie baisse de 98 % d'une action encore au-dessus de
-# 10 Md$ supposerait plus de 500 Md$ avant.
-MAX_PAST_CAP_RATIO = 50
+# multiple de sa capitalisation actuelle. Une vraie baisse de 95 % d'une action encore au-dessus de
+# 10 Md$ supposerait plus de 200 Md$ avant (Moderna, par exemple, reste sous ce multiple). À 50,
+# LATAM passait encore en 2016, quand son cours était plus bas qu'en 2019.
+MAX_PAST_CAP_RATIO = 20
 
 
 def pick_by_sector(ranked: list[str], size: int, sectors: dict[str, str],

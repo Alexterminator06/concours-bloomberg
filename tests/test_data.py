@@ -187,3 +187,24 @@ def test_sectors_try_the_other_yahoo_spellings(monkeypatch):
     monkeypatch.setattr(yf, "Ticker", FakeTicker)
     assert fetch_sectors(["NOVOB.CO", "AAPL", "NONE"], {"NOVOB.CO": ["NOVO-B.CO"]}) == {
         "NOVOB.CO": "Healthcare", "AAPL": "Technology", "NONE": ""}
+
+
+def test_one_day_price_spikes_are_removed_but_lasting_moves_are_kept():
+    from rsi_strategy.data import remove_price_spikes
+
+    idx = pd.bdate_range("2016-12-19", periods=6)
+    close = pd.DataFrame({
+        "LTM": [100.0, 101.0, 9_000.0, 102.0, 103.0, 104.0],  # x90 un seul jour, comme LTM.SN
+        "DROP": [50.0, 50.0, 5.0, 51.0, 52.0, 53.0],          # /10 un seul jour
+        "JUMP": [10.0, 10.0, 40.0, 41.0, 42.0, 43.0],         # x4 qui tient : un vrai mouvement
+        "CRASH": [80.0, 80.0, 8.0, 8.5, 9.0, 9.0],            # /10 sans retour : réel aussi
+    }, index=idx)
+    panel = {f: close.copy() for f in ["Open", "High", "Low", "Close"]}
+    panel["Volume"] = close * 0 + 1_000.0
+    cleaned, count = remove_price_spikes(panel)
+    assert count == 2
+    for f in ["Open", "High", "Low", "Close"]:
+        assert cleaned[f]["LTM"].isna().tolist() == [False, False, True, False, False, False]
+        assert cleaned[f]["DROP"].isna().sum() == 1
+        assert cleaned[f][["JUMP", "CRASH"]].notna().all().all()
+    assert cleaned["Volume"].notna().all().all()

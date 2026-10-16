@@ -14,7 +14,8 @@ import pandas as pd
 from .backtest import (compute_signals, largest_each_month, lookback_rows, market_is_bullish,
                        market_is_falling, pick_by_sector, run_backtest)
 from .config import StrategyConfig
-from .data import download_ohlcv, fetch_sectors, fx_tickers, load_ohlcv, load_sectors, to_usd
+from .data import (download_ohlcv, fetch_sectors, fx_tickers, load_ohlcv, load_sectors,
+                   remove_price_spikes, to_usd)
 from .metrics import (aligned_prices, benchmark_equity, performance_stats, relative_stats,
                       trade_stats)
 from .portfolio import load_portfolio, plan_orders
@@ -223,7 +224,10 @@ def _load_prices(tickers: list[str], wls: pd.DataFrame | None, start: str, end: 
             return download_ohlcv(symbols, start, end, alternatives=alts)
         return load_ohlcv(symbols, start, end, cache, refresh=refresh, alternatives=alts)
 
-    panel = load(tickers, alternatives)
+    panel, spikes = remove_price_spikes(load(tickers, alternatives))
+    if spikes:
+        print(f"  {spikes} cours aberrant(s) d'une séance ignoré(s) (saut d'au moins x3 qui revient "
+              f"le lendemain).")
     if wls is None:
         return panel
     info = wls.set_index("symbol").reindex(panel["Close"].columns)

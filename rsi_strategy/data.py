@@ -285,3 +285,26 @@ def load_sectors(symbols: list[str], path: Path, fetch=fetch_sectors) -> dict[st
         path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(sorted(known.items()), columns=["symbol", "secteur"]).to_csv(path, index=False)
     return {s: known[s] for s in symbols if s in known}
+
+
+# Un cours qui saute d'au moins ce facteur en une séance et revient dès la suivante est une erreur
+# de données (LTM.SN le 22 décembre 2016 : 90 fois son cours, un seul jour), pas un vrai mouvement.
+SPIKE_FACTOR = 3.0
+
+
+def remove_price_spikes(panel: dict[str, pd.DataFrame],
+                        factor: float = SPIKE_FACTOR) -> tuple[dict[str, pd.DataFrame], int]:
+    """Efface (NaN) les séances dont la clôture s'écarte d'au moins `factor` à la fois de la
+    clôture précédente et de la suivante, dans le même sens : un pic d'un jour qui revient aussitôt.
+    Les indicateurs reprennent alors le dernier cours connu. Renvoie le panel et le nombre de
+    séances effacées."""
+    close = panel["Close"]
+    before = close.ffill().shift(1)
+    after = close.bfill().shift(-1)
+    up = (close >= factor * before) & (close >= factor * after)
+    down = (close * factor <= before) & (close * factor <= after)
+    spikes = up | down
+    count = int(spikes.to_numpy().sum())
+    if not count:
+        return panel, 0
+    return {f: df.mask(spikes) if f != "Volume" else df for f, df in panel.items()}, count
