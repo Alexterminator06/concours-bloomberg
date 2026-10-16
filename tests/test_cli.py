@@ -257,9 +257,12 @@ def test_scan_sells_largest_stocks_when_the_market_fell_over_12_months(tmp_path,
 def test_scan_keeps_largest_stocks_when_the_market_rose(tmp_path, monkeypatch, capsys):
     orders = _scan_with_market(tmp_path, monkeypatch, False, ["--core-abs-momentum", "12"])
     assert "grandes valeurs conservées" in capsys.readouterr().out
-    # BIG1 n'est vendue qu'en partie, juste de quoi financer les achats RSI.
-    core = orders[orders["type"] == "grande valeur"]
-    assert list(core["ticker"]) == ["BIG1"] and 0 < core["quantite"].iloc[0] < 1_000
+    # BIG1 (82 % du portefeuille) est ramenée à 20 % ; le cash libéré achète aussi BIG2.
+    core = orders[orders["type"] == "grande valeur"].set_index("ticker")
+    assert core.loc["BIG1", "etape"] == "1. vente" and core.loc["BIG2", "etape"] == "3. achat"
+    big1 = pullback_panel(["BIG1"], None, "2026-10-16")["Close"]["BIG1"].iloc[-1]
+    equity = 100_000 + 1_000 * big1
+    assert (1_000 - core.loc["BIG1", "quantite"]) * big1 <= 0.20 * equity
 
 
 def test_scan_ranks_largest_stocks_by_momentum(tmp_path, monkeypatch, capsys):

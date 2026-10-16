@@ -570,3 +570,15 @@ def test_stopped_largest_stock_is_sold_and_excluded_until_next_month():
     assert set(res.core_holdings) == {"BIG1", "BIG2"} and len(res.core_stops) == 1
     # Sans stop, BIG1 est gardée tout le mois.
     assert run_backtest(panel, cfg(core_size=2), end=dates[20], core_shares=shares).core_stops is None
+
+
+def test_largest_stock_that_rose_above_the_limit_is_cut_back_to_it():
+    n = 60
+    rising = [100.0 * 1.04 ** k for k in range(n)]  # x10 en 60 séances
+    panel = core_panel(n, RISE=rising)
+    shares = pd.Series({"BIG1": 30.0, "RISE": 25.0})
+    res = run_backtest(panel, cfg(core_size=2, core_min_pct=1.0), core_shares=shares)
+    eq = res.equity
+    last = panel["Close"].index[-1]
+    weight = res.core_holdings["RISE"] * panel["Close"].loc[last, "RISE"] / eq["equity"].iloc[-1]
+    assert weight <= 0.20 * 1.05  # ramenée chaque matin à 20 % (sa hausse du jour en plus)

@@ -168,11 +168,18 @@ def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Ser
     cash = portfolio.cash
     kept: dict[str, float] = {}
     for t, row in pos[is_core].iterrows():
-        if t in members:
-            kept[t] = row["valeur"]
-        else:
+        if t not in members:
             sells[t] = int(row["quantite"])
             cash += row["valeur"] * sell_unit
+            continue
+        kept[t] = row["valeur"]
+        # Limite du concours : une grande valeur montée au-dessus de 20 % est ramenée à 20 %.
+        if row["valeur"] > target and pd.notna(row["quantite"]):
+            quantity = min(int(row["quantite"]), math.ceil((row["valeur"] - target) / price[t]))
+            if quantity > 0:
+                sells[t] = quantity
+                cash += quantity * price[t] * sell_unit
+                kept[t] -= quantity * price[t]
 
     # 2. Achats RSI, financés par le cash puis par les grandes valeurs.
     candidates = signals.drop(index=pos.index, errors="ignore")
@@ -202,9 +209,9 @@ def plan_orders(signals: pd.DataFrame, portfolio: Portfolio, last_prices: pd.Ser
     for t in sorted(kept, key=kept.get, reverse=True):
         if cash >= spent:
             break
-        held = int(pos.loc[t, "quantite"])
+        held = int(pos.loc[t, "quantite"]) - sells.get(t, 0)
         quantity = min(held, math.ceil((spent - cash) / (price[t] * sell_unit)))
-        sells[t] = quantity
+        sells[t] = sells.get(t, 0) + quantity
         cash += quantity * price[t] * sell_unit
         kept[t] -= quantity * price[t]
     cash -= spent

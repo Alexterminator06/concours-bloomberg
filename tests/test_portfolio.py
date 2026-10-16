@@ -147,15 +147,17 @@ def test_leftover_cash_is_spread_over_largest_stocks():
 
 
 def test_rsi_buys_are_funded_by_selling_the_largest_lines():
-    prices = pd.Series({"M1": 100.0, "M2": 100.0, "M3": 100.0})
-    pf = portfolio(0, M1=(3_000, 90.0), M2=(2_000, 90.0), M3=(5_000, 90.0))
+    # 6 grandes valeurs sous la limite de 20 %, pas de cash.
+    lines = {"M1": 1_500, "M2": 1_600, "M3": 1_700, "M4": 1_800, "M5": 1_700, "M6": 1_700}
+    prices = pd.Series({t: 100.0 for t in lines})
+    pf = portfolio(0, **{t: (q, 90.0) for t, q in lines.items()})
     plan = plan_orders(signals(("A", 2.0, 50.0)), pf, prices, StrategyConfig(),
-                       core_members=["M1", "M2", "M3"], core_universe=["M1", "M2", "M3"])
+                       core_members=list(lines), core_universe=list(lines))
 
     assert list(plan.orders.index) == ["A"]
     cost = plan.orders.loc["A", "quantite"] * 50 * (1 + PRICE_BUFFER)
-    assert list(plan.core_sells.index) == ["M3"]  # la plus grosse ligne
-    assert plan.core_sells.loc["M3", "montant_estime"] * (1 - PRICE_BUFFER) >= cost
+    assert plan.core_sells.index[0] == "M4"  # la plus grosse ligne d'abord
+    assert plan.core_sells["montant_estime"].sum() * (1 - PRICE_BUFFER) >= cost
     assert plan.core_buys.empty
     assert set(plan.positions["type"]) == {"grande valeur"}
     assert plan.positions["stop_loss"].isna().all()  # pas de stop sur les grandes valeurs
@@ -211,3 +213,14 @@ def test_dollar_amounts_are_turned_into_shares_at_the_last_price():
     assert plan.equity == pytest.approx(141_565) and plan.unpriced == ["OLD"]
     # BIG ne fait plus partie des grandes valeurs retenues : ses 40 actions sont vendues.
     assert plan.core_sells.loc["BIG", "quantite"] == 40
+
+
+def test_largest_stocks_above_the_position_limit_are_cut_back_to_it():
+    prices = pd.Series({"M1": 100.0, "M2": 100.0, "M3": 100.0})
+    pf = portfolio(0, M1=(3_000, 90.0), M2=(2_000, 90.0), M3=(5_000, 90.0))  # 30, 20 et 50 %
+    plan = plan_orders(signals(("A", 2.0, 50.0)), pf, prices, StrategyConfig(),
+                       core_members=["M1", "M2", "M3"], core_universe=["M1", "M2", "M3"])
+    # Ramenées à 20 % de 1 M$ : la vente finance l'achat RSI, sans autre vente.
+    assert plan.core_sells["quantite"].to_dict() == {"M1": 1_000, "M3": 3_000}
+    assert list(plan.orders.index) == ["A"]
+    assert plan.core_buys.empty  # toutes les lignes sont à la limite

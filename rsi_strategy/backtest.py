@@ -270,6 +270,20 @@ class CoreSleeve:
         self.flows[ticker] = self.flows.get(ticker, 0.0) - cost
         return cost
 
+    def trim_above(self, max_value: float, prices: np.ndarray) -> float:
+        """Ramène à `max_value` les lignes qui l'ont dépassée en montant (limite du concours par
+        position) ; renvoie le cash obtenu, que les achats du jour replacent dans les autres."""
+        cash = 0.0
+        for t in list(self.holdings):
+            price = self._price(t, prices)
+            if not np.isfinite(price) or price <= 0:
+                continue
+            excess = self.holdings[t] * price - max_value
+            shares = min(self.holdings[t], math.ceil(excess / price)) if excess > 0 else 0
+            if shares > 0:
+                cash += self._sell(t, shares, price)
+        return cash
+
     def reset_stop_bases(self, prices: np.ndarray) -> None:
         """Début de mois : la base du stop des lignes gardées devient le cours d'ouverture."""
         self.ref_price = {t: self._price(t, prices) for t in self.holdings
@@ -496,6 +510,11 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                                  [col[t] for t in core.members]]
                 core.set_inverse_vol_targets(window)
                 cash += core.trim_to_targets(open_px)
+
+        #    Limite du concours : aucune grande valeur au-dessus de 20 % du portefeuille, même après
+        #    une forte hausse ; l'excédent est vendu à l'ouverture et replacé dans les autres.
+        if core is not None:
+            cash += core.trim_above(prev_equity * cfg.position_size_pct, open_px)
 
         # 1. Achats RSI à l'ouverture (ordres de la veille, du RSI le plus bas au plus haut),
         #    financés si besoin en vendant des grandes valeurs, sans entamer leur part réservée.
