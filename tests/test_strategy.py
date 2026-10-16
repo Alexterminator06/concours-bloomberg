@@ -552,3 +552,21 @@ def test_atr_stop_sits_k_atr_below_the_entry_price():
     default = run_backtest(panel, cfg())
     entry = pd.concat([default.trades, default.open_positions]).iloc[0]
     assert entry["stop_loss"] == pytest.approx(entry["entry_price"] * 0.95)
+
+
+def test_stopped_largest_stock_is_sold_and_excluded_until_next_month():
+    n = 60
+    panel = core_panel(n, BIG1=[100.0] * 10 + [80.0] * (n - 10))  # chute de 20 % le 15 janvier
+    shares = pd.Series({"BIG1": 30.0, "BIG2": 20.0, "BIG3": 10.0})
+    dates = panel["Close"].index
+    c = cfg(core_size=2, core_stop_pct=0.10)
+    january = run_backtest(panel, c, end=dates[20], core_shares=shares)
+    assert set(january.core_holdings) == {"BIG2"}  # BIG1 vendue, BIG3 pas retenue
+    stop = january.core_stops.iloc[0]
+    assert (stop["date"], stop["ticker"]) == (dates[10], "BIG1")
+    assert stop["variation"] == pytest.approx(-0.20)  # ouverture déjà sous le stop : vendue à 80
+    # En février, BIG1 redevient l'une des 2 plus grandes : elle est rachetée.
+    res = run_backtest(panel, c, core_shares=shares)
+    assert set(res.core_holdings) == {"BIG1", "BIG2"} and len(res.core_stops) == 1
+    # Sans stop, BIG1 est gardée tout le mois.
+    assert run_backtest(panel, cfg(core_size=2), end=dates[20], core_shares=shares).core_stops is None

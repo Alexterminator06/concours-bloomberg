@@ -88,6 +88,10 @@ class StrategyConfig:
     # mois. Backtest seulement pour l'instant.
     core_inverse_vol: bool = False
     core_vol_days: int = 63
+    # Stop sur les grandes valeurs (0 = désactivé) : une ligne qui perd ce pourcentage depuis son
+    # prix d'achat, ou depuis l'ouverture du mois pour une ligne déjà détenue, est vendue et exclue
+    # jusqu'à la sélection du mois suivant ; le cash va aux autres. Backtest seulement pour l'instant.
+    core_stop_pct: float = 0.0
 
     # --- Coûts de transaction (aucun dans le concours Bloomberg) ---
     commission_bps: float = 0.0  # commission par ordre, en points de base du montant

@@ -98,6 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="backtest : pondérer les grandes valeurs par l'inverse de leur volatilité "
                         f"sur {defaults.core_vol_days} séances, rééquilibrées chaque mois (par "
                         "défaut : parts à peu près égales)")
+    s.add_argument("--core-stop", type=float, default=defaults.core_stop_pct, metavar="PCT",
+                   help="backtest : vendre une grande valeur qui perd PCT (ex. 0.10) depuis son prix "
+                        "d'achat ou l'ouverture du mois, et l'exclure jusqu'au mois suivant "
+                        "(0 = pas de stop)")
     s.add_argument("--core-candidates", type=int, default=defaults.core_candidates, metavar="N",
                    help="backtest : chercher chaque mois les plus grandes capitalisations de "
                         "l'époque parmi les N plus grandes actuelles du WLS (défaut "
@@ -138,7 +142,7 @@ def config_from_args(args) -> StrategyConfig:
         core_min_pct=args.core_min, core_abs_momentum_months=args.core_abs_momentum,
         core_rel_momentum_months=args.core_rel_momentum, core_momentum_pool=args.core_momentum_pool,
         core_candidates=args.core_candidates, core_sector_max=args.core_sector_max,
-        core_inverse_vol=args.core_inverse_vol,
+        core_inverse_vol=args.core_inverse_vol, core_stop_pct=args.core_stop,
         stop_first_if_ambiguous=not args.take_profit_first,
         commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
         benchmarks=args.benchmarks,
@@ -253,6 +257,8 @@ def _core_label(cfg: StrategyConfig) -> str:
     if cfg.core_inverse_vol:
         label += (f", pondérées par l'inverse de leur volatilité {cfg.core_vol_days} séances "
                   f"(rééquilibrage mensuel)")
+    if cfg.core_stop_pct:
+        label += f", stop -{cfg.core_stop_pct:.0%} (exclues jusqu'au mois suivant)"
     if cfg.core_candidates:
         label += f" (candidates : les {cfg.core_candidates} plus grandes actuelles)"
     if cfg.core_abs_momentum_months:
@@ -390,6 +396,8 @@ def cmd_backtest(args) -> None:
         tstats["P&L grandes valeurs ($)"] = result.core_pnl
         if cfg.core_abs_momentum_months:
             tstats["Séances sans grandes valeurs"] = (result.equity["core"] <= 0).mean()
+        if result.core_stops is not None:
+            tstats["Stops sur les grandes valeurs"] = len(result.core_stops)
 
     print(f"\nPériode : {dates[0].date()} -> {dates[-1].date()} ({len(dates)} séances), "
           f"capital initial {cfg.initial_capital:,.0f} $".replace(",", " "))
@@ -422,7 +430,9 @@ def cmd_backtest(args) -> None:
              equity_curve=curves, next_orders=result.next_orders,
              summary=format_table({**perf, **{f"vs {k}": v for k, v in rel.items()}}).reset_index(),
              **({"grandes_valeurs": core_summary} if core_summary is not None else {}),
-             **({"grandes_valeurs_jour": daily} if daily is not None else {}))
+             **({"grandes_valeurs_jour": daily} if daily is not None else {}),
+             **({"stops_grandes_valeurs": result.core_stops}
+                if result.core_stops is not None else {}))
     plot_performance(curves, args.out / "performance.png",
                      f"Stratégie {signal_label(cfg)} – small & mid caps vs indices")
     print(f"\nRésultats enregistrés dans {args.out}/")
@@ -450,9 +460,9 @@ def _money(value: float, signed: bool = False) -> str:
 
 def cmd_scan(args) -> None:
     cfg = config_from_args(args)
-    if cfg.core_inverse_vol or cfg.stop_atr_mult:
-        raise SystemExit("--core-inverse-vol et --stop-atr ne servent pour l'instant qu'au "
-                         "backtest.")
+    if cfg.core_inverse_vol or cfg.stop_atr_mult or cfg.core_stop_pct:
+        raise SystemExit("--core-inverse-vol, --stop-atr et --core-stop ne servent pour l'instant "
+                         "qu'au backtest.")
     tickers, wls = _universe(args, cfg)
     portfolio = None
     if args.portfolio_file.exists():

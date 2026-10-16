@@ -54,6 +54,7 @@ class BacktestResult:
     core_holdings: dict | None = None  # grandes valeurs détenues à la fin : ticker -> titres
     core_summary: pd.DataFrame | None = None  # par grande valeur : mois retenue, P&L ($)
     core_daily_pnl: pd.DataFrame | None = None  # P&L de chaque grande valeur par séance ($)
+    core_stops: pd.DataFrame | None = None  # stops des grandes valeurs : date, ticker, variation
 
 
 def compute_signals(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
@@ -188,6 +189,8 @@ class CoreSleeve:
         self.cash_flow = 0.0  # ventes - achats : P&L = cash_flow + valeur détenue
         self.flows: dict[str, float] = {}  # même chose, action par action
         self.history: list[tuple[pd.Timestamp, list[str]]] = []  # classement de chaque mois
+        self.ref_price: dict[str, float] = {}  # base du stop : achat, ou ouverture du mois
+        self.stops: list[tuple[pd.Timestamp, str, float]] = []  # (date, ticker, P&L depuis la base)
 
     def _price(self, ticker: str, prices: np.ndarray) -> float:
         return prices[self.col[ticker]]
@@ -253,6 +256,7 @@ class CoreSleeve:
         self.holdings[ticker] -= shares
         if self.holdings[ticker] == 0:
             del self.holdings[ticker]
+            self.ref_price.pop(ticker, None)
         self.cash_flow += proceeds
         self.flows[ticker] = self.flows.get(ticker, 0.0) + proceeds
         return proceeds
@@ -260,9 +264,38 @@ class CoreSleeve:
     def _buy(self, ticker: str, shares: int, price: float) -> float:
         cost = shares * price * (1 + self.slip) * (1 + self.comm)
         self.holdings[ticker] = self.holdings.get(ticker, 0) + shares
+        self.ref_price.setdefault(ticker, price)
         self.cash_flow -= cost
         self.flows[ticker] = self.flows.get(ticker, 0.0) - cost
         return cost
+
+    def reset_stop_bases(self, prices: np.ndarray) -> None:
+        """Début de mois : la base du stop des lignes gardées devient le cours d'ouverture."""
+        self.ref_price = {t: self._price(t, prices) for t in self.holdings
+                          if np.isfinite(self._price(t, prices))}
+
+    def apply_stops(self, stop_pct: float, when: pd.Timestamp, o: np.ndarray,
+                    low: np.ndarray) -> float:
+        """Vend les lignes qui ont touché leur stop dans la séance (au cours d'ouverture si elles
+        ouvrent déjà dessous) et les retire de la sélection du mois ; renvoie le cash obtenu."""
+        cash = 0.0
+        for t in list(self.holdings):
+            base = self.ref_price.get(t)
+            j = self.col[t]
+            if base is None or not np.isfinite(low[j]):
+                continue
+            level = base * (1 - stop_pct)
+            if np.isfinite(o[j]) and o[j] <= level:  # une ligne achetée à l'ouverture a cette base
+                price = o[j]
+            elif low[j] <= level:
+                price = level
+            else:
+                continue
+            self.stops.append((when, t, price / base - 1))
+            cash += self._sell(t, self.holdings[t], price)
+            if t in self.members:
+                self.members.remove(t)
+        return cash
 
     def sell_non_members(self, prices: np.ndarray) -> float:
         """Vend les lignes sorties du classement ; renvoie le cash obtenu."""
@@ -456,6 +489,7 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
                 core.select(C_ffill[prev])
             core.history.append((d, list(core.members)))
             cash += core.sell_non_members(open_px)
+            core.reset_stop_bases(open_px)
             if cfg.core_inverse_vol and core.members:
                 window = C_ffill[max(prev - cfg.core_vol_days, 0):prev + 1,
                                  [col[t] for t in core.members]]
@@ -538,6 +572,10 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
             })
             del positions[t]
 
+        #    Stop des grandes valeurs, sur le plus bas de la séance.
+        if core is not None and cfg.core_stop_pct:
+            cash += core.apply_stops(cfg.core_stop_pct, d, O[i], L[i])
+
         # 3. Valorisation à la clôture.
         core_value = core.value(C_ffill[i]) if core is not None else 0.0
         if core is not None:
@@ -582,6 +620,8 @@ def run_backtest(panel: dict[str, pd.DataFrame], cfg: StrategyConfig,
         core_holdings=dict(core.holdings) if core is not None else None,
         core_summary=core.summary(C_ffill[last]) if core is not None else None,
         core_daily_pnl=_daily_pnl(core_pnl_rows) if core is not None else None,
+        core_stops=(pd.DataFrame(core.stops, columns=["date", "ticker", "variation"])
+                    if core is not None and cfg.core_stop_pct else None),
     )
 
 

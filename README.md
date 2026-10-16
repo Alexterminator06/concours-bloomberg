@@ -129,6 +129,7 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--core-momentum-pool N` | 50 | nombre de plus grandes capitalisations parmi lesquelles le momentum relatif choisit |
 | `--core-sector-max N` | 3 | au plus N grandes valeurs du même secteur, en descendant le classement du mois (0 = pas de plafond) ; les secteurs viennent de Yahoo Finance et sont gardés dans `data/secteurs.csv` (modifiable à la main) |
 | `--core-inverse-vol` | | backtest : pondérer chaque grande valeur par l'inverse de sa volatilité sur 63 séances, avec un rééquilibrage chaque mois, au lieu de parts à peu près égales |
+| `--core-stop PCT` | 0 (désactivé) | backtest : vendre une grande valeur qui perd PCT (ex. 0.10) depuis son prix d'achat ou l'ouverture du mois, et l'exclure jusqu'au mois suivant ; le cash va aux autres grandes valeurs |
 | `--core-candidates N` | 2000 | backtest : chercher chaque mois les plus grandes capitalisations de l'époque parmi les N plus grandes actuelles du WLS, pour retrouver celles qui ne sont plus parmi les plus grandes aujourd'hui (biais du survivant ; 0 = les 100 plus grandes) |
 | `--universe` | monde | `monde` : tous les membres du WLS ; `us` : small & mid caps américaines du WLS |
 | `--wls-file` | `data/wls_members.csv` | membres du WLS, créés par `import-wls` |
