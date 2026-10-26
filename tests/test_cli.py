@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 import rsi_strategy.__main__ as cli
+from rsi_strategy import data
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +84,7 @@ def run_scan(tmp_path, monkeypatch, portfolio_text=None, wls_text=None, extra_ar
     universe = pd.DataFrame({"symbol": ["DEEP", "HELD", "SOFT"]})
     monkeypatch.setattr(cli, "ROOT", tmp_path)
     monkeypatch.setattr(cli, "load_universe", lambda *a, **k: universe)
-    monkeypatch.setattr(cli, "download_ohlcv", pullback_panel)
+    monkeypatch.setattr(data, "download_ohlcv", pullback_panel)
     if portfolio_text is not None:
         (tmp_path / "portefeuille.csv").write_text(portfolio_text, encoding="utf-8")
     if wls_text is not None:
@@ -227,6 +228,20 @@ def test_scan_handles_foreign_stocks_and_bloomberg_tickers(tmp_path, monkeypatch
     assert "Taux de change (1 devises)" in out
 
 
+def test_second_scan_reuses_the_local_price_store(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    def download(tickers, start, end, **kw):
+        calls.append(list(tickers))
+        return pullback_panel(tickers, start, end)
+
+    run_scan(tmp_path, monkeypatch, "ticker,quantite\nCASH,100000\n")
+    monkeypatch.setattr(data, "download_ohlcv", download)
+    cli.main(["scan"])
+    assert calls == []
+    assert "aucun téléchargement" in capsys.readouterr().out
+
+
 def _scan_with_market(tmp_path, monkeypatch, market_falls: bool, extra_args):
     def download(tickers, start, end, **kw):
         panel = pullback_panel(tickers, start, end)
@@ -235,7 +250,7 @@ def _scan_with_market(tmp_path, monkeypatch, market_falls: bool, extra_args):
         return panel
 
     monkeypatch.setattr(cli, "ROOT", tmp_path)
-    monkeypatch.setattr(cli, "download_ohlcv", download)
+    monkeypatch.setattr(data, "download_ohlcv", download)
     (tmp_path / "WLS.csv").write_text(WLS_EXPORT, encoding="utf-8")
     cli.main(["import-wls", str(tmp_path / "WLS.csv")])
     (tmp_path / "portefeuille.csv").write_text(

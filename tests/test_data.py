@@ -1,45 +1,108 @@
-"""Cache des cours : robustesse aux fichiers corrompus, au disque plein, et nettoyage."""
+"""Base de cours locale : téléchargements limités à ce qui manque, robustesse, et Yahoo."""
 
-import os
-
+import numpy as np
 import pandas as pd
 import pytest
 
 from rsi_strategy import data
 
 
+class FakeYahoo:
+    """Yahoo simulé : un cours par ticker et par jour ouvré jusqu'à « maintenant » (heure de New
+    York), multiplié par `scale[ticker]` (ajustement recalculé après un dividende)."""
+
+    def __init__(self, monkeypatch, now="2024-03-04 18:00"):
+        self.calls: list[tuple[list[str], str]] = []
+        self.now = pd.Timestamp(now)
+        self.scale: dict[str, float] = {}
+        self.empty: set[str] = set()
+        monkeypatch.setattr(data, "download_ohlcv", self.download)
+        monkeypatch.setattr(data, "_now", lambda: self.now)
+
+    def download(self, tickers, start, end, **kw):
+        self.calls.append((list(tickers), start))
+        last = min(pd.Timestamp(end) - pd.Timedelta(days=1), self.now.normalize())
+        idx = pd.bdate_range(start, last)
+        cols = [t for t in tickers if t not in self.empty]
+        if not cols:
+            raise RuntimeError("Aucune donnée téléchargée depuis Yahoo Finance.")
+        days = (idx - pd.Timestamp("2020-01-01")).days.to_numpy()
+        close = pd.DataFrame({t: (100.0 + 0.1 * days) * self.scale.get(t, 1.0) for t in cols},
+                             index=idx).astype("float32")
+        return {f: close for f in data.FIELDS}
+
+
 @pytest.fixture
-def fake_download(monkeypatch):
-    calls = []
-
-    def download(tickers, start, end, **kw):
-        calls.append(tickers)
-        idx = pd.bdate_range(start, periods=3)
-        return {f: pd.DataFrame(1.0, index=idx, columns=tickers) for f in data.FIELDS}
-
-    monkeypatch.setattr(data, "download_ohlcv", download)
-    return calls
+def yahoo(monkeypatch):
+    return FakeYahoo(monkeypatch)
 
 
-def test_cache_is_reused(tmp_path, fake_download):
+def test_store_is_reused_for_the_same_or_a_shorter_period(tmp_path, yahoo):
     first = data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
-    second = data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
-    assert len(fake_download) == 1
-    pd.testing.assert_frame_equal(first["Close"], second["Close"])
+    again = data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
+    shorter = data.load_ohlcv(["A"], "2024-01-10", "2024-01-20", tmp_path)
+    assert len(yahoo.calls) == 1
+    pd.testing.assert_frame_equal(first["Close"], again["Close"])
+    assert shorter["Close"].index[0] == pd.Timestamp("2024-01-10")
+    assert shorter["Close"].index[-1] == pd.Timestamp("2024-01-19")
 
 
-def test_truncated_cache_is_downloaded_again(tmp_path, fake_download):
+def test_only_missing_stocks_and_earlier_history_are_downloaded(tmp_path, yahoo):
+    data.load_ohlcv(["A", "B"], "2024-01-01", "2024-02-01", tmp_path)
+    data.load_ohlcv(["A", "B", "C"], "2024-01-01", "2024-02-01", tmp_path)
+    assert yahoo.calls[1] == (["C"], "2024-01-01")
+    panel = data.load_ohlcv(["A"], "2023-12-01", "2024-02-01", tmp_path)
+    assert yahoo.calls[2] == (["A"], "2023-12-01")
+    assert panel["Close"].index[0] == pd.Timestamp("2023-12-01")
+
+
+def test_new_sessions_are_added_without_downloading_the_history_again(tmp_path, yahoo):
+    data.load_ohlcv(["A", "B"], "2023-06-01", "2024-03-05", tmp_path)
+    yahoo.now = pd.Timestamp("2024-03-05 10:00")  # séance du jour pas encore terminée
+    data.load_ohlcv(["A", "B"], "2023-06-01", "2024-03-06", tmp_path)
+    assert len(yahoo.calls) == 1
+
+    yahoo.now = pd.Timestamp("2024-03-05 18:00")
+    panel = data.load_ohlcv(["A", "B"], "2023-06-01", "2024-03-06", tmp_path)
+    assert yahoo.calls[1:] == [(["A", "B"], "2024-02-19")]  # 14 jours avant le téléchargement précédent
+    expected = yahoo.download(["A", "B"], "2023-06-01", "2024-03-06")["Close"]
+    pd.testing.assert_frame_equal(panel["Close"], expected, check_freq=False)
+
+
+def test_history_is_downloaded_again_when_yahoo_recalculates_the_adjustment(tmp_path, yahoo,
+                                                                             capsys):
+    data.load_ohlcv(["A", "B"], "2023-06-01", "2024-03-05", tmp_path)
+    yahoo.now = pd.Timestamp("2024-03-05 18:00")
+    yahoo.scale["B"] = 0.98  # dividende : tout l'historique ajusté de B baisse de 2 %
+    panel = data.load_ohlcv(["A", "B"], "2023-06-01", "2024-03-06", tmp_path)
+    assert yahoo.calls[1:] == [(["A", "B"], "2024-02-19"), (["B"], "2023-06-01")]
+    expected = yahoo.download(["B"], "2023-06-01", "2024-03-06")["Close"]["B"]
+    pd.testing.assert_series_equal(panel["Close"]["B"], expected, check_freq=False)
+    assert "1 action(s) dont Yahoo a recalculé les cours ajustés" in capsys.readouterr().out
+
+
+def test_stock_without_new_prices_keeps_the_stored_ones(tmp_path, yahoo):
+    before = data.load_ohlcv(["A", "B"], "2024-01-01", "2024-03-05", tmp_path)
+    yahoo.now = pd.Timestamp("2024-03-05 18:00")
+    yahoo.empty.add("B")  # Yahoo ne renvoie rien pour B ce jour-là
+    after = data.load_ohlcv(["A", "B"], "2024-01-01", "2024-03-06", tmp_path)
+    pd.testing.assert_series_equal(after["Close"]["B"].dropna(), before["Close"]["B"],
+                                   check_freq=False)
+
+
+def test_truncated_store_is_rebuilt(tmp_path, yahoo, capsys):
     data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
-    (cached,) = tmp_path.glob("ohlcv_*.pkl")
-    cached.write_bytes(cached.read_bytes()[:20])  # fichier tronqué, comme après un disque plein
+    store = tmp_path / "actions.pkl"
+    store.write_bytes(store.read_bytes()[:20])  # fichier tronqué, comme après un disque plein
 
     panel = data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
-    assert len(fake_download) == 2
+    assert len(yahoo.calls) == 2
     assert list(panel["Close"].columns) == ["A"]
-    pd.read_pickle(cached)  # le cache a été réécrit correctement
+    assert "Base de cours illisible" in capsys.readouterr().out
+    pd.read_pickle(store)  # la base a été réécrite correctement
 
 
-def test_disk_full_does_not_stop_the_run(tmp_path, fake_download, monkeypatch, capsys):
+def test_disk_full_does_not_stop_the_run(tmp_path, yahoo, monkeypatch, capsys):
     def disk_full(obj, path):
         open(path, "wb").write(b"partial")
         raise OSError(28, "No space left on device")
@@ -47,34 +110,15 @@ def test_disk_full_does_not_stop_the_run(tmp_path, fake_download, monkeypatch, c
     monkeypatch.setattr(data.pd, "to_pickle", disk_full)
     panel = data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
     assert list(panel["Close"].columns) == ["A"]
-    assert list(tmp_path.iterdir()) == []  # ni cache tronqué, ni fichier temporaire
-    assert "Cache non enregistré" in capsys.readouterr().out
+    assert list(tmp_path.iterdir()) == []  # ni base tronquée, ni fichier temporaire
+    assert "Base de cours non enregistrée" in capsys.readouterr().out
 
 
-def _load_with_distinct_mtime(tickers, start, tmp_path, k):
-    data.load_ohlcv(tickers, start, "2024-03-01", tmp_path)
-    newest = max(tmp_path.glob("ohlcv_*.pkl"), key=os.path.getmtime)
-    os.utime(newest, (1_000_000 + k, 1_000_000 + k))  # horodatages distincts
-    return newest
-
-
-def test_old_cache_files_are_pruned_beyond_the_size_budget(tmp_path, fake_download, monkeypatch):
-    first = _load_with_distinct_mtime(["A"], "2024-01-01", tmp_path, 0)
-    monkeypatch.setattr(data, "MAX_CACHE_BYTES", int(3.5 * first.stat().st_size))
-    for k in range(1, 7):
-        _load_with_distinct_mtime(["A"], f"2024-01-{k + 1:02d}", tmp_path, k)
-    assert len(list(tmp_path.glob("ohlcv_*.pkl"))) == 3
-
-
-def test_small_cache_files_do_not_evict_the_stock_prices(tmp_path, fake_download, monkeypatch):
-    # Chaque backtest écrit les actions, puis les taux de change et les indices (petits fichiers) :
-    # les actions du run précédent doivent rester en cache.
-    stocks = _load_with_distinct_mtime([f"T{k}" for k in range(300)], "2024-01-01", tmp_path, 0)
-    small = _load_with_distinct_mtime(["VT"], "2024-01-01", tmp_path, 1)
-    monkeypatch.setattr(data, "MAX_CACHE_BYTES", stocks.stat().st_size + 10 * small.stat().st_size)
-    for k in range(2, 8):
-        _load_with_distinct_mtime([f"FX{k}"], "2024-01-01", tmp_path, k)
-    assert stocks.exists()
+def test_old_cache_files_are_removed(tmp_path, yahoo, capsys):
+    (tmp_path / "ohlcv_0123456789ab.pkl").write_bytes(b"x" * 1000)
+    data.load_ohlcv(["A"], "2024-01-01", "2024-02-01", tmp_path)
+    assert [p.name for p in tmp_path.iterdir()] == ["actions.pkl"]
+    assert "Ancien cache des cours supprimé" in capsys.readouterr().out
 
 
 def test_download_summarises_tickers_without_prices(monkeypatch, capsys):
@@ -143,14 +187,17 @@ def test_rate_limited_tickers_are_downloaded_again(monkeypatch, capsys):
     assert "Too Many Requests" not in capsys.readouterr().err
 
 
-def test_incomplete_download_is_reported_and_not_cached(tmp_path, monkeypatch, capsys):
-    fake_yahoo(monkeypatch, {"BBB": 99})
+def test_refused_stocks_are_asked_again_next_time(tmp_path, monkeypatch, capsys):
+    calls = fake_yahoo(monkeypatch, {"BBB": 4})
     panel = data.load_ohlcv(["AAA", "BBB"], "2024-01-01", "2024-02-01", tmp_path)
     assert list(panel["Close"].columns) == ["AAA"]
-    out = capsys.readouterr().out
-    assert "1 action(s) non téléchargées : Yahoo a limité le nombre de requêtes" in out
-    assert "Cache non enregistré : téléchargement incomplet" in out
-    assert not list(tmp_path.glob("ohlcv_*.pkl"))
+    assert "1 action(s) non téléchargées : Yahoo a limité le nombre de requêtes" in (
+        capsys.readouterr().out)
+
+    calls.clear()
+    panel = data.load_ohlcv(["AAA", "BBB"], "2024-01-01", "2024-02-01", tmp_path)
+    assert calls == [["BBB"]]  # AAA vient de la base
+    assert list(panel["Close"].columns) == ["AAA", "BBB"]
 
 
 def test_sectors_are_fetched_once_and_cached(tmp_path):

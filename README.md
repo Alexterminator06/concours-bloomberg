@@ -138,14 +138,25 @@ Options utiles (`python -m rsi_strategy backtest --help` pour la liste complète
 | `--benchmarks` | VT SMMD IWM | ETF de comparaison (le premier est l'indice principal) |
 | `--max-tickers N` | tous | limite l'univers aux N plus grosses capitalisations, pour un essai rapide |
 | `--refresh-universe` | | sans liste WLS : ré-interroge le screener Yahoo au lieu de relire `data/universe.csv` |
-| `--refresh-data` | | ignore le cache des cours (`data/cache/`) |
+| `--refresh-data` | | retélécharge tout l'historique des cours demandés au lieu de compléter la base locale (`data/cache/`) |
 
-Les cours téléchargés sont mis en cache dans `data/cache/` (environ 40 Mo par période pour
-l'univers US, 250 Mo pour l'univers mondial). Un backtest relancé sur la même période réutilise
-ces cours au lieu de les retélécharger. Le cache garde les fichiers les plus récemment utilisés,
-dans la limite de 1,5 Go (`MAX_CACHE_BYTES` dans `rsi_strategy/data.py`), et le dossier peut être
-supprimé sans risque. La date de fin par défaut étant le jour même, un backtest lancé le lendemain
-retélécharge tout : pour comparer plusieurs runs sur plusieurs jours, fixez `--end`.
+Les cours téléchargés sont gardés dans une base locale, `data/cache/` : `actions.pkl` (environ
+55 Mo par année d'historique pour les 10 000 actions du WLS), `indices.pkl` et `changes.pkl`. Le
+scan et le backtest y prennent leurs cours et ne téléchargent que ce qui manque :
+- une période déjà couverte (même plus courte, ou avec d'autres options) ne télécharge rien ;
+- une période qui remonte plus loin retélécharge l'historique des actions concernées ;
+- après une nouvelle clôture (17 h à New York, du lundi au vendredi), seules les dernières
+  séances sont téléchargées. Le scan relancé le même soir, par exemple après avoir corrigé le
+  portefeuille, ne télécharge plus rien. Pour vérifier qu'aucun dividende ni aucune division
+  d'actions n'a changé l'historique ajusté de Yahoo, ces téléchargements reprennent les deux
+  semaines précédentes ; si un cours déjà enregistré a changé, l'historique de l'action est
+  retéléchargé en entier ;
+- les actions que Yahoo refuse de servir (limite de requêtes) sont redemandées au lancement
+  suivant, et seulement elles.
+
+Le premier lancement remplit la base (aussi long qu'avant), les suivants sont rapides. Le dossier
+peut être supprimé sans risque : il sera reconstruit. Il n'est pas envoyé sur GitHub ; s'il est
+synchronisé par OneDrive, on peut l'exclure de la synchronisation.
 
 Au premier lancement, l'univers est enregistré dans `data/universe.csv`. On peut éditer ce fichier
 ou le remplacer par sa propre liste : seule la colonne `symbol` est obligatoire.
@@ -348,12 +359,14 @@ python -m rsi_strategy backtest --start 2019-01-01 --end 2023-10-13 --core-rel-m
 - **Devises et lots** : les cours sont convertis en dollars au taux de clôture du jour, ce qui
   ajoute le risque de change aux positions étrangères. Certaines places imposent des lots
   (100 actions au Japon, en Chine…) : arrondissez si la plateforme les exige.
-- **Volume de données** : télécharger 10 000 actions prend nettement plus de temps qu'avant
-  (de l'ordre de 15 à 30 minutes par backtest sans cache, et pour chaque scan quotidien) ; le
-  cache d'une période pèse environ 250 Mo. Au-delà d'un certain nombre de requêtes, Yahoo bloque
-  temporairement (« Too Many Requests ») : le téléchargement ralentit, attend et réessaie
-  automatiquement. Si des actions manquent encore, un avertissement l'indique, les résultats
-  sont incomplets et rien n'est mis en cache : relancez plus tard.
+- **Volume de données** : remplir la base locale pour 10 000 actions prend de l'ordre de 15 à
+  30 minutes (premier lancement, ou période qui remonte plus loin). Ensuite, le premier lancement
+  après chaque clôture ne télécharge que les dernières séances, mais Yahoo répond toujours action
+  par action : comptez quelques minutes ; les lancements suivants du même soir ne téléchargent
+  rien. Au-delà d'un certain nombre de requêtes, Yahoo bloque temporairement (« Too Many
+  Requests ») : le téléchargement ralentit, attend et réessaie automatiquement. Si des actions
+  manquent encore, un avertissement l'indique et les résultats sont incomplets : relancez plus
+  tard, seules les actions manquantes seront redemandées.
 - **SMMD** n'existe que depuis juillet 2017. Pour un backtest antérieur, utiliser par exemple
   `--benchmarks VT IWM`.
 

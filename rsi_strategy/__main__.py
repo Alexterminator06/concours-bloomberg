@@ -14,7 +14,7 @@ import pandas as pd
 from .backtest import (compute_signals, largest_each_month, lookback_rows, market_is_bullish,
                        market_is_falling, pick_by_sector, run_backtest)
 from .config import StrategyConfig
-from .data import (download_ohlcv, fetch_sectors, fx_tickers, load_ohlcv, load_sectors,
+from .data import (fetch_sectors, fx_tickers, load_ohlcv, load_sectors,
                    remove_price_spikes, to_usd)
 from .metrics import (aligned_prices, benchmark_equity, performance_stats, relative_stats,
                       trade_stats)
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="univers Yahoo, utilisé seulement sans liste WLS")
     g.add_argument("--refresh-universe", action="store_true",
                    help="ré-interroger le screener Yahoo au lieu du fichier sauvegardé")
-    g.add_argument("--refresh-data", action="store_true", help="ignorer le cache des cours")
+    g.add_argument("--refresh-data", action="store_true", help="retélécharger tout l'historique des cours au lieu de compléter la base locale")
     g.add_argument("--max-tickers", type=int, default=None,
                    help="limiter l'univers aux N plus grosses capitalisations (tests rapides)")
     s = common.add_argument_group("stratégie")
@@ -213,16 +213,20 @@ def _load_sectors(symbols: list[str], wls: pd.DataFrame | None) -> dict[str, str
                         fetch=lambda missing: fetch_sectors(missing, alternatives))
 
 
+def _cache_dir() -> Path:
+    """Dossier de la base de cours locale (non envoyé sur GitHub)."""
+    return ROOT / "data" / "cache"
+
+
 def _load_prices(tickers: list[str], wls: pd.DataFrame | None, start: str, end: str,
-                 cache: Path | None, refresh: bool = False) -> dict[str, pd.DataFrame]:
-    """Cours des tickers, convertis en dollars. Avec `cache` : cache disque (backtest) ;
-    sans : téléchargement direct (scan quotidien)."""
+                 refresh: bool = False) -> dict[str, pd.DataFrame]:
+    """Cours des tickers, convertis en dollars, tirés de la base de cours locale (seul ce qui y
+    manque est téléchargé)."""
     alternatives = _alternatives(tickers, wls)
 
-    def load(symbols, alts=None):
-        if cache is None:
-            return download_ohlcv(symbols, start, end, alternatives=alts)
-        return load_ohlcv(symbols, start, end, cache, refresh=refresh, alternatives=alts)
+    def load(symbols, alts=None, store="actions"):
+        return load_ohlcv(symbols, start, end, _cache_dir(), refresh=refresh, alternatives=alts,
+                          store=store)
 
     panel, spikes = remove_price_spikes(load(tickers, alternatives))
     if spikes:
@@ -236,7 +240,7 @@ def _load_prices(tickers: list[str], wls: pd.DataFrame | None, start: str, end: 
     if not fx_symbols:
         return panel
     print(f"Taux de change ({len(fx_symbols)} devises) :")
-    fx_close = load(list(fx_symbols.values()))["Close"]
+    fx_close = load(list(fx_symbols.values()), store="changes")["Close"]
     return to_usd(panel, currency, info["unit"].fillna(1.0), fx_close)
 
 
@@ -347,13 +351,11 @@ def cmd_backtest(args) -> None:
         tickers = sorted(set(tickers) | set(core_pool["symbol"]))
     data_start = (pd.Timestamp(args.start) - timedelta(days=_warmup_days(cfg))).date().isoformat()
     data_end = (pd.Timestamp(args.end) + timedelta(days=1)).date().isoformat()  # borne exclusive chez Yahoo
-    cache = ROOT / "data" / "cache"
-
     print("Cours des actions :")
-    panel = _load_prices(tickers, wls, data_start, data_end, cache, refresh=args.refresh_data)
+    panel = _load_prices(tickers, wls, data_start, data_end, refresh=args.refresh_data)
     print("Cours des indices :")
-    bench_close = load_ohlcv(cfg.benchmarks, data_start, data_end, cache,
-                             refresh=args.refresh_data)["Close"]
+    bench_close = load_ohlcv(cfg.benchmarks, data_start, data_end, _cache_dir(),
+                             refresh=args.refresh_data, store="indices")["Close"]
 
     market = cfg.benchmarks[0]
     if _needs_market(cfg) and market not in bench_close:
@@ -497,10 +499,11 @@ def cmd_scan(args) -> None:
     start = (date.today() - timedelta(days=_warmup_days(cfg))).isoformat()
     end = (date.today() + timedelta(days=1)).isoformat()
     panel = _load_prices(sorted(set(tickers) | set(held) | set(core_members) | set(momentum_pool)),
-                         wls, start, end, cache=None)
+                         wls, start, end, refresh=args.refresh_data)
     market_close = None
     if _needs_market(cfg):
-        market_close = download_ohlcv([cfg.benchmarks[0]], start, end)["Close"].iloc[:, 0]
+        market_close = load_ohlcv([cfg.benchmarks[0]], start, end, _cache_dir(),
+                                  refresh=args.refresh_data, store="indices")["Close"].iloc[:, 0]
     if core_members:
         core_members = _monthly_core_members(cfg, panel["Close"], market_close, core_members,
                                              momentum_pool, sectors)

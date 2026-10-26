@@ -1,19 +1,24 @@
-"""Téléchargement des cours journaliers (OHLCV) depuis Yahoo Finance, avec cache local."""
+"""Téléchargement des cours journaliers (OHLCV) depuis Yahoo Finance, avec une base locale."""
 
-import hashlib
 import logging
 import os
 import re
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 FIELDS = ["Open", "High", "Low", "Close", "Volume"]
-# Place maximale du cache, en octets : les fichiers les plus récemment utilisés sont gardés.
-# Un backtest mondial en occupe environ 250 Mo par période (actions), plus quelques petits
-# fichiers (indices, taux de change).
-MAX_CACHE_BYTES = 1_500_000_000
+# Base de cours locale (dans le dossier du cache) : environ 55 Mo par année d'historique pour
+# les 10 000 actions du WLS.
+STORE_VERSION = 1
+MARKET_TZ = "America/New_York"
+# Heure de New York à laquelle toutes les places ont clôturé (les dernières sont en Amérique).
+DAY_COMPLETE = pd.Timedelta(hours=17)
+# Jours repris avant le téléchargement précédent pour vérifier que l'ajustement n'a pas changé.
+OVERLAP_DAYS = 14
+ADJUSTMENT_TOLERANCE = 5e-4
 THREADS = 8          # requêtes simultanées vers Yahoo : au-delà, Yahoo bloque plus souvent
 PAUSE = 1.0          # secondes entre deux paquets d'actions
 RETRY_WAITS = (60, 120, 240)  # attentes avant de réessayer quand Yahoo bloque (« Too Many Requests »)
@@ -175,53 +180,210 @@ def to_usd(panel: dict[str, pd.DataFrame], currency: pd.Series, unit: pd.Series,
 
 def load_ohlcv(tickers: list[str], start: str, end: str | None, cache_dir: Path,
                refresh: bool = False,
-               alternatives: dict[str, list[str]] | None = None) -> dict[str, pd.DataFrame]:
-    """Comme `download_ohlcv`, mais réutilise un cache pickle pour la même requête."""
-    key = hashlib.md5(f"{sorted(tickers)}|{start}|{end}".encode()).hexdigest()[:12]
-    path = cache_dir / f"ohlcv_{key}.pkl"
-    if path.exists() and not refresh:
-        try:
-            panel = pd.read_pickle(path)
-            path.touch()  # marque le fichier comme récemment utilisé
-            return panel
-        except Exception:
-            print(f"  Cache illisible ({path.name}) : nouveau téléchargement.")
-            path.unlink(missing_ok=True)
-    report: dict = {}
-    panel = download_ohlcv(tickers, start, end, alternatives=alternatives, report=report)
-    if report.get("refused"):
-        print("  Cache non enregistré : téléchargement incomplet.")
-    else:
-        _write_cache(panel, path)
-    return panel
+               alternatives: dict[str, list[str]] | None = None,
+               store: str = "actions") -> dict[str, pd.DataFrame]:
+    """Comme `download_ohlcv`, mais à partir d'une base de cours locale (`cache_dir/<store>.pkl` :
+    une pour les actions, de petites bases à part pour les indices et les taux de change, plus
+    rapides à relire), complétée au fil des lancements : seuls les cours qui y manquent sont
+    téléchargés.
 
-
-def _write_cache(panel: dict[str, pd.DataFrame], path: Path) -> None:
-    """Écrit le cache via un fichier temporaire, puis supprime les plus anciens au-delà de
-    `MAX_CACHE_BYTES`. La limite porte sur la place occupée, pas sur le nombre de fichiers : chaque
-    backtest écrit aussi de petits fichiers (indices, taux de change), qui ne doivent pas chasser
-    les gros fichiers des actions.
-
-    Un échec d'écriture (disque plein...) ne laisse aucun fichier tronqué et n'interrompt pas
-    le backtest : on continue simplement sans cache.
+    Une action est à jour si la base la couvre depuis `start` et si ses cours ont été téléchargés
+    après la dernière clôture utile (`DAY_COMPLETE`, heure de New York, du lundi au vendredi,
+    sans dépasser `end`). Sinon :
+    - si la base ne remonte pas jusqu'à `start` (ou avec `refresh`), tout l'historique est
+      téléchargé à nouveau ;
+    - sinon, seules les dernières séances le sont, à partir de `OVERLAP_DAYS` jours avant le
+      téléchargement précédent. Si les cours déjà connus de ces jours-là ont changé (dividende
+      ou division d'actions : Yahoo recalcule tout l'historique ajusté), l'historique complet de
+      l'action est téléchargé à nouveau, pour ne jamais raccorder deux ajustements différents.
+    Les actions que Yahoo refuse de servir (limite de requêtes) seront redemandées au lancement
+    suivant ; tout le reste est enregistré.
     """
+    path = cache_dir / f"{store}.pkl"
+    saved = _read_store(path)
+    fields, coverage = saved["fields"], saved["coverage"]
+    now = _now()
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end) if end else now.normalize() + pd.Timedelta(days=1)
+    needed = min(_last_close(now), end_ts - pd.Timedelta(days=1) + DAY_COMPLETE)
+    tickers = list(dict.fromkeys(tickers))
+
+    full: dict[str, pd.Timestamp] = {}   # ticker -> début du téléchargement complet
+    tail: dict[str, pd.Timestamp] = {}   # ticker -> début des dernières séances à reprendre
+    for t in tickers:
+        known = t in coverage.index
+        if refresh or not known or coverage.at[t, "debut"] > start_ts:
+            full[t] = min(start_ts, coverage.at[t, "debut"]) if known else start_ts
+        elif coverage.at[t, "complet"] < needed:
+            tail[t] = coverage.at[t, "complet"].normalize() - pd.Timedelta(days=OVERLAP_DAYS)
+    print(f"  Base de cours locale : {len(tickers) - len(full) - len(tail)} / {len(tickers)} "
+          f"à jour" + (f", {len(full)} à télécharger" if full else "")
+          + (f", {len(tail)} à compléter (dernières séances)" if tail else "")
+          + ("" if full or tail else ", aucun téléchargement") + ".")
+
+    if full or tail:
+        fetch_end = max(end_ts, now.normalize() + pd.Timedelta(days=1)).date().isoformat()
+        updates: list[tuple[list[str], dict[str, pd.DataFrame], dict[str, pd.Timestamp]]] = []
+        recalculated = []
+        for served, panel in _fetch_groups(tail, fetch_end, alternatives):
+            changed = _adjustment_changed(fields, coverage, panel, served)
+            recalculated += changed
+            served = [t for t in served if t not in changed]
+            updates.append((served, {f: df.drop(columns=changed) for f, df in panel.items()},
+                            {t: tail[t] for t in served}))
+        if recalculated:
+            print(f"  {len(recalculated)} action(s) dont Yahoo a recalculé les cours ajustés "
+                  f"(dividende, division) : historique complet téléchargé à nouveau.")
+            full.update({t: coverage.at[t, "debut"] for t in recalculated})
+        for served, panel in _fetch_groups(full, fetch_end, alternatives):
+            updates.append((served, panel, {t: full[t] for t in served}))
+        if updates:
+            for served, panel, first in updates:
+                # Une action sans cours cette fois garde ceux déjà enregistrés.
+                fields = _merge(fields, panel, {t: first[t] for t in panel["Close"].columns
+                                                if t in first})
+            done = pd.DataFrame(
+                [(t, first[t] if t in full else coverage.at[t, "debut"], now)
+                 for served, _, first in updates for t in served],
+                columns=["ticker", "debut", "complet"]).set_index("ticker")
+            coverage = pd.concat([coverage.drop(done.index, errors="ignore"), done])
+            _write_store(path, {"version": STORE_VERSION, "fields": fields, "coverage": coverage})
+
+    close = fields.get("Close")
+    cols = pd.Index([t for t in tickers if close is not None and t in close.columns])
+    if not len(cols):
+        raise RuntimeError("Aucune donnée téléchargée depuis Yahoo Finance.")
+    window = close.loc[(close.index >= start_ts) & (close.index < end_ts), cols]
+    cols = window.columns[window.notna().any()]
+    rows = window.index[window[cols].notna().any(axis=1)]
+    return {f: fields[f].loc[rows, cols] for f in FIELDS}
+
+
+def _now() -> pd.Timestamp:
+    """Heure de New York, sans fuseau (comme les dates des cours)."""
+    return pd.Timestamp.now(tz=MARKET_TZ).tz_localize(None)
+
+
+def _last_close(now: pd.Timestamp) -> pd.Timestamp:
+    """Dernière heure `DAY_COMPLETE` passée un jour de semaine : à ce moment, toutes les places
+    ont clôturé la séance du jour."""
+    close = now.normalize() + DAY_COMPLETE
+    if close > now:
+        close -= pd.Timedelta(days=1)
+    while close.dayofweek >= 5:
+        close -= pd.Timedelta(days=1)
+    return close
+
+
+def _fetch_groups(starts: dict[str, pd.Timestamp], end: str,
+                  alternatives: dict[str, list[str]] | None):
+    """Télécharge les tickers de `starts`, groupés par date de début. Renvoie, pour chaque groupe,
+    les tickers servis par Yahoo (avec ou sans cours) et leurs cours. Un groupe dont aucune
+    action n'a de cours (Yahoo injoignable...) est laissé de côté : il sera redemandé."""
+    groups: dict[pd.Timestamp, list[str]] = {}
+    for t, first in starts.items():
+        groups.setdefault(first, []).append(t)
+    for first, group in sorted(groups.items()):
+        report: dict = {}
+        alts = {t: alternatives[t] for t in group if t in (alternatives or {})}
+        try:
+            panel = download_ohlcv(group, first.date().isoformat(), end, alternatives=alts,
+                                   report=report)
+        except RuntimeError:
+            continue
+        refused = report.get("refused", set())
+        yield [t for t in group if t.upper() not in refused], panel
+
+
+def _adjustment_changed(fields: dict[str, pd.DataFrame], coverage: pd.DataFrame,
+                        panel: dict[str, pd.DataFrame], tickers: list[str]) -> list[str]:
+    """Tickers dont les clôtures déjà enregistrées (séances terminées lors du téléchargement
+    précédent) diffèrent des nouvelles : Yahoo a recalculé leur historique ajusté."""
+    old, new = fields.get("Close"), panel["Close"]
+    if old is None:
+        return []
+    cols = [t for t in tickers if t in old.columns and t in new.columns]
+    if not cols:
+        return []
+    done = (coverage.loc[cols, "complet"] - DAY_COMPLETE).dt.normalize()
+    dates = new.index.intersection(old.index)
+    before = old.loc[dates, cols].to_numpy(dtype=float)
+    after = new.loc[dates, cols].to_numpy(dtype=float)
+    comparable = (dates.to_numpy()[:, None] <= done.to_numpy()[None, :]) & (before > 0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        gap = np.abs(after / before - 1)
+    differs = np.where(comparable & np.isfinite(gap), gap > ADJUSTMENT_TOLERANCE, False)
+    return [t for t, d in zip(cols, differs.any(axis=0)) if d]
+
+
+def _merge(fields: dict[str, pd.DataFrame], panel: dict[str, pd.DataFrame],
+           clear_from: dict[str, pd.Timestamp]) -> dict[str, pd.DataFrame]:
+    """Range dans la base les cours téléchargés : pour chaque ticker de `clear_from`, les cours
+    enregistrés à partir de cette date sont remplacés par les nouveaux (effacés s'il n'y en a
+    plus)."""
+    if not clear_from:
+        return fields
+    out = {}
+    for f in FIELDS:
+        old = fields.get(f, pd.DataFrame(index=pd.DatetimeIndex([]), dtype="float32"))
+        new = panel[f]
+        index = old.index.union(new.index)
+        columns = old.columns.append(new.columns.difference(old.columns, sort=False))
+        if index.equals(old.index) and columns.equals(old.columns):
+            values = old.to_numpy(dtype="float32", copy=True)
+        else:
+            values = old.reindex(index=index, columns=columns).to_numpy(dtype="float32", copy=True)
+        position = pd.Series(np.arange(len(columns)), index=columns)
+        dates = index.to_numpy()
+        for first, group in pd.Series(clear_from).groupby(pd.Series(clear_from)):
+            values[np.ix_(dates >= first.to_datetime64(), position[group.index].to_numpy())] = np.nan
+        if len(new.columns):
+            rows = index.get_indexer(new.index)
+            values[np.ix_(rows, position[new.columns].to_numpy())] = new.to_numpy(dtype="float32")
+        out[f] = pd.DataFrame(values, index=index, columns=columns)
+    return out
+
+
+def _empty_store() -> dict:
+    coverage = pd.DataFrame({"debut": pd.Series(dtype="datetime64[ns]"),
+                             "complet": pd.Series(dtype="datetime64[ns]")})
+    return {"version": STORE_VERSION, "fields": {}, "coverage": coverage}
+
+
+def _read_store(path: Path) -> dict:
+    """Base de cours locale ; vide si elle n'existe pas ou est illisible. Supprime les fichiers
+    de l'ancien cache (un fichier par requête), remplacés par la base."""
+    old = list(path.parent.glob("ohlcv_*.pkl")) + list(path.parent.glob("ohlcv_*.tmp"))
+    if old:
+        size = sum(p.stat().st_size for p in old)
+        for p in old:
+            p.unlink(missing_ok=True)
+        print(f"  Ancien cache des cours supprimé ({size / 1e9:.1f} Go) : remplacé par la base "
+              f"de cours locale.")
+    if not path.exists():
+        return _empty_store()
+    try:
+        store = pd.read_pickle(path)
+        if store.get("version") == STORE_VERSION:
+            return store
+    except Exception:
+        pass
+    print(f"  Base de cours illisible ({path.name}) : elle est reconstruite.")
+    path.unlink(missing_ok=True)
+    return _empty_store()
+
+
+def _write_store(path: Path, store: dict) -> None:
+    """Écrit la base via un fichier temporaire. Un échec d'écriture (disque plein...) ne laisse
+    aucun fichier tronqué et n'interrompt pas le lancement : on continue sans enregistrer."""
     tmp = path.with_suffix(".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        pd.to_pickle(panel, tmp)
+        pd.to_pickle(store, tmp)
         os.replace(tmp, path)
     except OSError as exc:
         tmp.unlink(missing_ok=True)
-        print(f"  ! Cache non enregistré ({exc.strerror or exc}) : on continue sans cache.")
-        return
-    files = sorted(path.parent.glob("ohlcv_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    total = 0
-    for old in files:
-        total += old.stat().st_size
-        if total > MAX_CACHE_BYTES and old != path:
-            old.unlink(missing_ok=True)
-    for old in path.parent.glob("ohlcv_*.tmp"):
-        old.unlink(missing_ok=True)
+        print(f"  ! Base de cours non enregistrée ({exc.strerror or exc}) : on continue sans.")
 
 
 def _sector(symbol: str) -> str | None:
